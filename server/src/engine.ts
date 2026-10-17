@@ -83,9 +83,17 @@ export class Engine {
     const t = TECNICA_POR_ID.get(i.tecnicaId);
     if (!t) return 'Técnica desconocida';
     const fx = faseIndex(n.fase);
-    // Búsqueda profunda de .env y documentos: permitida siempre que el nodo sea alcanzable
-    if (t.id === 'scan_docs') {
+    // Búsqueda profunda de .env, sqli y spray: permitida siempre que el nodo sea alcanzable
+    if (t.id === 'scan_docs' || t.id === 'sqli_dump' || t.id === 'phishing_spray') {
       if (!this.alcanzable(i.nodoId)) return 'Nodo no alcanzable (necesitas un foothold adyacente)';
+      return null;
+    }
+    if (t.id === 'dump_lsass') {
+      if (fx < faseIndex('escalada')) return 'Requiere privilegios elevados (escalada/root) para volcar memoria de procesos';
+      return null;
+    }
+    if (t.id === 'persist_backdoor') {
+      if (fx < faseIndex('acceso_inicial')) return 'Requiere acceso inicial previo en el nodo';
       return null;
     }
     // Pivote lateral: propaga el foothold a un vecino desde un nodo con escalada.
@@ -158,7 +166,7 @@ export class Engine {
     });
 
     if (!exito) {
-      this.logTerminal('attacker', cmdStr, `[-] PROBE FAILED: La sonda/exploit sobre ${n!.nombre} fue bloqueada o no respondió (p=${(pExito * 100).toFixed(0)}%).`, 'warn', n!.id);
+      this.logTerminal('attacker', cmdStr, `[-] PROBE FAILED: La sonda/exploit sobre ${n!.nombre} fue bloqueada o no respondió (p=${(pExito * 100).toFixed(0)}%).`, 'error', n!.id);
       this.logTerminal('defender', `ebpf_trace -e net_drop`, `[eBPF ALERT] Intento de conexión sospechosa mitigado en ${n!.nombre} [ruido: ${ruido}]`, 'alerta', n!.id);
       return;
     }
@@ -198,6 +206,55 @@ export class Engine {
       }
       salidaDetalle = `[+] VULN DISCOVERY: Descubiertos ${extraidos} archivos (.env, configs, documentos) en ${n!.nombre}:\n` +
         sensibles.map(s => `    * [ARCH_EXPUESTO] ${s}`).join('\n');
+    } else if (t.id === 'sqli_dump') {
+      n!.fase = ORDEN_FASE[Math.max(faseIndex(n!.fase), faseIndex('acceso_inicial'))];
+      const itemName = `sqli_dump_${n!.id}.sql`;
+      if (!this.loot.some(l => l.nodoId === n!.id && l.item === itemName)) {
+        this.loot.push({
+          id: `loot-${this.tick}-${this.loot.length}`,
+          tick: this.tick,
+          nodoId: n!.id,
+          nodoNombre: n!.nombre,
+          item: itemName,
+          tipo: 'db',
+          secreto: `SQL TABLE DUMP: Esquemas 'usuarios', 'roles', 'transacciones' extraídos (${(n!.valor * 1.8).toFixed(1)} MB con registros y hashes).`,
+        });
+      }
+      salidaDetalle = `[+] SQLMAP 1.7.2#STABLE - INYECCIÓN SQL EXITOSA en ${n!.nombre}:\n` +
+        `    [INFO] DBMS detectado: PostgreSQL/MySQL (Inyección booleana y UNION confirmada)\n` +
+        `    [+] Tablas identificadas: ['usuarios_admin', 'cuentas_2026', 'sesiones_activas']\n` +
+        `    [+] Registros guardados en C2: ${itemName}`;
+    } else if (t.id === 'dump_lsass') {
+      n!.fase = 'escalada';
+      const itemName = `lsass_hashes_${n!.id}.txt`;
+      if (!this.loot.some(l => l.nodoId === n!.id && l.item === itemName)) {
+        this.loot.push({
+          id: `loot-${this.tick}-${this.loot.length}`,
+          tick: this.tick,
+          nodoId: n!.id,
+          nodoNombre: n!.nombre,
+          item: itemName,
+          tipo: 'cred',
+          secreto: `NTLM_HASHES: Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::`,
+        });
+      }
+      salidaDetalle = `[+] MIMIKATZ 2.2.0 - SEKURLSA::LOGONPASSWORDS en ${n!.nombre}:\n` +
+        `    * SeDebugPrivilege: Activado (Handle de proceso LSASS obtenido)\n` +
+        `    * Dominio: CORP | Usuario: Administrator (RID 500)\n` +
+        `    * Hash NTLM: 31d6cfe0d16ae931b73c59d7e0c089c0\n` +
+        `    * Kerberos TGT: Ticket de dominio capturado y guardado en C2.`;
+    } else if (t.id === 'persist_backdoor') {
+      n!.fase = ORDEN_FASE[Math.max(faseIndex(n!.fase), faseIndex('escalada'))];
+      salidaDetalle = `[+] PERSISTENCIA INSTALADA en ${n!.nombre}:\n` +
+        `    * Cronjob implantado: /etc/cron.d/sys-telemetry (Ejecuta beacon C2 cada 3 min)\n` +
+        `    * WebShell camuflada: /var/www/html/.cache_api.php (SHA-256 verificado)\n` +
+        `    * Rootkit eBPF activo: Control persistente que resiste SIGKILL estándar.`;
+    } else if (t.id === 'phishing_spray') {
+      n!.fase = ORDEN_FASE[Math.max(faseIndex(n!.fase), faseIndex('acceso_inicial'))];
+      salidaDetalle = `[*] CRACKMAPEXEC v5.2.2 - PASS-THE-HASH & CREDENTIAL SPRAY sobre ${n!.nombre}:\n` +
+        `    [+] SMB 445 / WinRM: Autenticación exitosa con credenciales de dominio.\n` +
+        `    [+] CORP\\admin_ws : Secret@2026! (Pwn3d!) -> Shell interactiva establecida.\n` +
+        `    [+] Foothold y credenciales activas en ${n!.nombre}.`;
     } else if (t.id === 'exfil') {
       this.exfiltrados.add(n!.id);
       n!.fase = 'exfiltracion';
@@ -277,7 +334,16 @@ export class Engine {
     } else if (i.respuesta === 'terminar_proceso') {
       this.logTerminal('attacker', `session_check --host ${n?.nombre ?? i.nodoId}`, `[-] SIGNAL KILLED: Conexión o shell interrumpida por el SOC defensor.`, 'error', i.nodoId);
     } else if (i.respuesta === 'parchear_env') {
-      this.logTerminal('attacker', `curl -s http://${n?.nombre}/.env`, `[-] ACCESS DENIED (403): Variables y credenciales rotadas/parcheadas.`, 'warn', i.nodoId);
+      this.logTerminal('attacker', `curl -s http://${n?.nombre}/.env`, `[-] ACCESS DENIED (403): Variables y credenciales rotadas/parcheadas.`, 'error', i.nodoId);
+    } else if (i.respuesta === 'parchear_vuln') {
+      this.logTerminal('attacker', `check_exploit --target ${n?.nombre ?? i.nodoId}`, `[-] EXPLOIT MITIGATED: El servicio fue parchado por el SOC. CVE no explotable (Hotfix).`, 'error', i.nodoId);
+    } else if (i.respuesta === 'yara_memory_scan') {
+      this.logTerminal('attacker', `beacon_ping --node ${n?.nombre ?? i.nodoId}`, `[-] BEACON DESTROYED: Proceso hostil en memoria purgado mediante firma YARA.`, 'error', i.nodoId);
+    } else if (i.respuesta === 'canary_token') {
+      this.logTerminal('defender', `canary_monitor --token-status --node ${n?.nombre ?? i.nodoId}`, `[CANARY ARM] Trampa HoneyToken sembrada en ${n?.nombre}. Telemetría lista.`, 'output', i.nodoId);
+      this.logTerminal('attacker', `probe_env --node ${n?.nombre ?? i.nodoId}`, `[!] DECOY SUSPECTED: Detectadas credenciales señuelo en ${n?.nombre}.`, 'alerta', i.nodoId);
+    } else if (i.respuesta === 'rotate_keys') {
+      this.logTerminal('attacker', `ssh -i id_rsa ${n?.nombre ?? i.nodoId}`, `[-] AUTH REJECTED: Llaves SSH / Kerberos revocadas por el SOC.`, 'error', i.nodoId);
     }
   }
 

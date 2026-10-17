@@ -9,7 +9,17 @@ NodeState = Literal['limpio', 'sondeado', 'comprometido', 'aislado', 'honeypot']
 MatchState = Literal['lobby', 'lista', 'en_curso', 'pausada', 'terminada']
 PlayMode = Literal['manual', 'autoplay']
 Winner = Optional[Literal['attacker', 'defender', 'empate']]
-ResponseKind = Literal['aislar', 'terminar_proceso', 'honeypot', 'bloquear_ip', 'parchear_env']
+ResponseKind = Literal[
+    'aislar',
+    'terminar_proceso',
+    'honeypot',
+    'bloquear_ip',
+    'parchear_env',
+    'parchear_vuln',
+    'yara_memory_scan',
+    'canary_token',
+    'rotate_keys',
+]
 
 class AttackIntent(BaseModel):
     tecnicaId: str

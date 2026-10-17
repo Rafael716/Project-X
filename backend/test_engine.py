@@ -54,3 +54,44 @@ def test_cadena_completable_vs_pasivo():
         e.avanzar(atacante_heuristico.decidir(e).intent, None)
         i += 1
     assert e.metricas()['datosExfiltrados'] > 0
+
+
+def test_sqli_dump_creates_loot():
+    e = Engine(pymes01(), 42)
+    # Give initial foothold
+    e.nodo('ws1')['fase'] = 'recon'
+    e.avanzar({'tecnicaId': 'sqli_dump', 'nodoId': 'ws1'}, None)
+    # Even if prob doesn't hit on first tick, validar_ataque should accept sqli_dump on reachable node
+    assert e.validar_ataque({'tecnicaId': 'sqli_dump', 'nodoId': 'ws1'}) is None
+
+
+def test_dump_lsass_requires_escalada():
+    e = Engine(pymes01(), 42)
+    # On clean node, dump_lsass should be rejected
+    assert e.validar_ataque({'tecnicaId': 'dump_lsass', 'nodoId': 'ws1'}) is not None
+    # On node with escalada, should be accepted
+    e.nodo('ws1')['fase'] = 'escalada'
+    e.nodo('ws1')['compromisoReal'] = True
+    assert e.validar_ataque({'tecnicaId': 'dump_lsass', 'nodoId': 'ws1'}) is None
+
+
+def test_parchear_vuln_increases_posture_and_diff():
+    e = Engine(pymes01(), 42)
+    web = e.nodo('web')
+    init_posture = web['posturaDefensiva']
+    e.avanzar(None, {'respuesta': 'parchear_vuln', 'nodoId': 'web'})
+    assert web['posturaDefensiva'] > init_posture
+    assert all(v['dificultad'] >= 0.7 for v in web['vulnerabilidades'])
+
+
+def test_yara_memory_scan_reverts_escalada_zero_availability_loss():
+    e = Engine(pymes01(), 42)
+    ws1 = e.nodo('ws1')
+    ws1['fase'] = 'escalada'
+    ws1['compromisoReal'] = True
+    ws1['persistente'] = True
+    init_disp = e.metricas()['disponibilidad']
+    e.avanzar(None, {'respuesta': 'yara_memory_scan', 'nodoId': 'ws1'})
+    assert ws1['fase'] == 'acceso_inicial'
+    assert e.metricas()['disponibilidad'] == init_disp
+

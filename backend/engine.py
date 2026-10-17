@@ -118,9 +118,17 @@ class Engine:
         if not t:
             return 'Técnica desconocida'
         fx = fase_index(n['fase'])
-        if t['id'] == 'scan_docs':
+        if t['id'] in ('scan_docs', 'sqli_dump', 'phishing_spray'):
             if not self.alcanzable(i['nodoId']):
                 return 'Nodo no alcanzable (necesitas un foothold adyacente)'
+            return None
+        if t['id'] == 'dump_lsass':
+            if fx < fase_index('escalada'):
+                return 'Requiere privilegios elevados (escalada/root) para volcar memoria de procesos'
+            return None
+        if t['id'] == 'persist_backdoor':
+            if fx < fase_index('acceso_inicial'):
+                return 'Requiere acceso inicial previo en el nodo'
             return None
         if t['id'] == 'pivot':
             if fx >= fase_index('acceso_inicial'):
@@ -215,6 +223,53 @@ class Engine:
                     extraidos += 1
             salida_detalle = (f"[+] VULN DISCOVERY: Descubiertos {extraidos} archivos (.env, configs, documentos) en {n['nombre']}:\n" +
                               "\n".join(f"    * [ARCH_EXPUESTO] {s}" for s in sensibles))
+        elif t['id'] == 'sqli_dump':
+            n['fase'] = ORDEN_FASE[max(fase_index(n['fase']), fase_index('acceso_inicial'))]
+            item_name = f"sqli_dump_{n['id']}.sql"
+            if not any(l['nodoId'] == n['id'] and l['item'] == item_name for l in self.loot):
+                sec = f"SQL TABLE DUMP: Esquemas 'usuarios', 'roles', 'transacciones' extraídos ({n['valor']*1.8:.1f} MB con registros y hashes)."
+                self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
+                                  'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': item_name, 'tipo': 'db', 'secreto': sec})
+            for archivo in n.get('archivosSensibles') or []:
+                if ('sql' in archivo or 'dump' in archivo) and not any(l['nodoId'] == n['id'] and l['item'] == archivo for l in self.loot):
+                    self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
+                                      'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': archivo, 'tipo': 'db',
+                                      'secreto': f"EXTRACTED SQL TABLE: {archivo} sustraído mediante inyección de consultas."})
+            salida_detalle = (f"[+] SQLMAP 1.7.2#STABLE - INYECCIÓN SQL EXITOSA en {n['nombre']}:\n"
+                              f"    [INFO] DBMS identificado: PostgreSQL/MySQL (Inyección booleana y UNION confirmada)\n"
+                              f"    [+] Tablas identificadas: ['usuarios_admin', 'cuentas_2026', 'sesiones_activas']\n"
+                              f"    [+] Hash volcado: admin_$2y$12$K8j7m..e8b662d005b79942 (Descifrado: Secret@2026!)\n"
+                              f"    [+] Registros guardados en C2: sqli_dump_{n['id']}.sql")
+        elif t['id'] == 'dump_lsass':
+            n['fase'] = 'escalada'
+            item_name = f"lsass_hashes_{n['id']}.txt"
+            if not any(l['nodoId'] == n['id'] and l['item'] == item_name for l in self.loot):
+                sec = f"NTLM_HASHES: Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::"
+                self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
+                                  'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': item_name, 'tipo': 'cred', 'secreto': sec})
+            for archivo in n.get('archivosSensibles') or []:
+                if ('pass' in archivo or 'rsa' in archivo or 'key' in archivo) and not any(l['nodoId'] == n['id'] and l['item'] == archivo for l in self.loot):
+                    self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
+                                      'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': archivo, 'tipo': 'cred',
+                                      'secreto': f"CREDENTIAL VAULT: {archivo} extraído de memoria de procesos."})
+            salida_detalle = (f"[+] MIMIKATZ 2.2.0 - SEKURLSA::LOGONPASSWORDS en {n['nombre']}:\n"
+                              f"    * SeDebugPrivilege: Activado (Handle de proceso LSASS obtenido)\n"
+                              f"    * Dominio: CORP | Usuario: Administrator (RID 500)\n"
+                              f"    * Hash NTLM: 31d6cfe0d16ae931b73c59d7e0c089c0\n"
+                              f"    * Kerberos TGT: Ticket de dominio capturado y guardado en C2.")
+        elif t['id'] == 'persist_backdoor':
+            n['fase'] = ORDEN_FASE[max(fase_index(n['fase']), fase_index('escalada'))]
+            n['persistente'] = True
+            salida_detalle = (f"[+] PERSISTENCIA INSTALADA en {n['nombre']}:\n"
+                              f"    * Cronjob implantado: /etc/cron.d/sys-telemetry (Ejecuta beacon C2 cada 3 min)\n"
+                              f"    * WebShell camuflada: /var/www/html/.cache_api.php (SHA-256 verificado)\n"
+                              f"    * Rootkit eBPF activo: Control persistente que resiste SIGKILL estándar.")
+        elif t['id'] == 'phishing_spray':
+            n['fase'] = ORDEN_FASE[max(fase_index(n['fase']), fase_index('acceso_inicial'))]
+            salida_detalle = (f"[*] CRACKMAPEXEC v5.2.2 - PASS-THE-HASH & CREDENTIAL SPRAY sobre {n['nombre']}:\n"
+                              f"    [+] SMB 445 / WinRM: Autenticación exitosa con credenciales de dominio.\n"
+                              f"    [+] CORP\\admin_ws : Secret@2026! (Pwn3d!) -> Shell interactiva establecida.\n"
+                              f"    [+] Foothold y credenciales activas en {n['nombre']}.")
         elif t['id'] == 'exfil':
             self._exfiltrados.add(n['id'])
             n['fase'] = 'exfiltracion'
@@ -274,6 +329,17 @@ class Engine:
             self.log_terminal('attacker', f"session_check --host {nombre}", "[-] SIGNAL KILLED: Conexión o shell interrumpida por el SOC defensor.", 'error', i['nodoId'])
         elif i['respuesta'] == 'parchear_env':
             self.log_terminal('attacker', f"curl -s http://{nombre}/.env", "[-] ACCESS DENIED (403): Variables y credenciales rotadas/parcheadas.", 'error', i['nodoId'])
+        elif i['respuesta'] == 'parchear_vuln':
+            self.log_terminal('attacker', f"check_exploit --target {nombre}", f"[-] EXPLOIT MITIGATED: El servicio en {nombre} fue parchado por el SOC. CVE no explotable (Hotfix).", 'error', i['nodoId'])
+        elif i['respuesta'] == 'yara_memory_scan':
+            if n and n.get('persistente'):
+                n['persistente'] = False
+            self.log_terminal('attacker', f"beacon_ping --node {nombre}", f"[-] BEACON DESTROYED: Proceso hostil en memoria purgado mediante firma YARA.", 'error', i['nodoId'])
+        elif i['respuesta'] == 'canary_token':
+            self.log_terminal('defender', f"canary_monitor --token-status --node {nombre}", f"[CANARY ARM] Trampa HoneyToken sembrada en {nombre}. Telemetría lista.", 'output', i['nodoId'])
+            self.log_terminal('attacker', f"probe_env --node {nombre}", f"[!] DECOY SUSPECTED: Detectadas credenciales señuelo en {nombre}.", 'alerta', i['nodoId'])
+        elif i['respuesta'] == 'rotate_keys':
+            self.log_terminal('attacker', f"ssh -i id_rsa {nombre}", f"[-] AUTH REJECTED: Llaves SSH / Kerberos revocadas en {nombre} por el SOC.", 'error', i['nodoId'])
 
     def _ruido_benigno(self):
         activos = [x for x in self.nodos if x['estado'] != 'aislado']

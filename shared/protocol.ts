@@ -138,7 +138,16 @@ export interface TechniqueMeta {
   comandoEjemplo?: string;
 }
 
-export type ResponseKind = 'aislar' | 'terminar_proceso' | 'honeypot' | 'bloquear_ip' | 'parchear_env';
+export type ResponseKind =
+  | 'aislar'
+  | 'terminar_proceso'
+  | 'honeypot'
+  | 'bloquear_ip'
+  | 'parchear_env'
+  | 'parchear_vuln'
+  | 'yara_memory_scan'
+  | 'canary_token'
+  | 'rotate_keys';
 export interface ResponseMeta {
   id: ResponseKind;
   nombre: string;

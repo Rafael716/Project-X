@@ -23,22 +23,36 @@ export const atacanteHeuristico: AttackerPolicy = {
         let razon = `Avanzar fase con éxito ${(e.probExito(t.id, n) * 100).toFixed(0)}%`;
 
         if (t.id === 'exfil') {
-          p += 12;
+          p += 14;
           razon = `Objetivo cumbre: exfiltrar base de datos y archivos críticos de ${n.nombre}`;
+        } else if (t.id === 'sqli_dump') {
+          const hasSqliLoot = e.loot.some(l => l.nodoId === n.id && l.item.includes('sqli_dump'));
+          p += hasSqliLoot ? -2 : 8.5;
+          razon = `Inyección SQL en ${n.nombre} para sustraer tablas confidenciales y credenciales`;
+        } else if (t.id === 'dump_lsass') {
+          const hasLsassLoot = e.loot.some(l => l.nodoId === n.id && l.item.includes('lsass_hashes'));
+          p += hasLsassLoot ? -3 : 8.0;
+          razon = `Volcado de memoria LSASS con Mimikatz en ${n.nombre} para extraer hashes NTLM de dominio`;
+        } else if (t.id === 'persist_backdoor') {
+          p += 6.0;
+          razon = `Instalar persistencia (WebShell + Cron) en ${n.nombre} para blindar el acceso C2`;
+        } else if (t.id === 'phishing_spray') {
+          p += 5.5;
+          razon = `Rociado de credenciales / Pass-the-Hash contra servicios expuestos de ${n.nombre}`;
         } else if (t.id === 'scan_docs') {
           // Búsqueda a fondo de .env, claves y documentos
           const archivosPendientes = (n.archivosSensibles ?? []).filter(s => !e.loot.some(l => l.nodoId === n.id && l.item === s));
           if (archivosPendientes.length > 0) {
-            p += 6.5;
+            p += 7.0;
             razon = `Descubrir y volcar ${archivosPendientes.length} archivos (.env / credenciales / docs) en ${n.nombre}`;
           } else {
             p -= 4; // Ya saqueado
           }
         } else if (t.id === 'pivot') {
-          p += 5;
+          p += 5.5;
           razon = `Pivote lateral e infiltración hacia nodo adyacente ${n.nombre}`;
         } else if (t.id === 'privesc') {
-          p += 4;
+          p += 5.0;
           razon = `Escalar privilegios a ROOT/SYSTEM en ${n.nombre}`;
         }
 
@@ -81,16 +95,23 @@ export const defensorHeuristico: DefenderPolicy = {
     // 1. Detección de nodos con compromiso crítico o exfiltración inminente
     const critico = activos.find(n => n.compromisoReal && (n.fase === 'escalada' || n.fase === 'exfiltracion' || n.score > 0.88));
     if (critico) {
-      const resp: RespondIntent = critico.score > 0.92 || critico.fase === 'exfiltracion'
-        ? { respuesta: 'aislar', nodoId: critico.id }
-        : { respuesta: 'terminar_proceso', nodoId: critico.id };
+      let resp: RespondIntent;
+      let motivo: string;
+      if (critico.score > 0.92 || critico.fase === 'exfiltracion') {
+        resp = { respuesta: 'aislar', nodoId: critico.id };
+        motivo = 'Riesgo inminente de robo de base de datos → Cuarentena eBPF inmediata para aislar el host.';
+      } else if (critico.fase === 'escalada') {
+        resp = { respuesta: 'yara_memory_scan', nodoId: critico.id };
+        motivo = 'Proceso o backdoor con privilegios detectado → Ejecutando escaneo YARA en memoria para purgar beacons sin disrupción.';
+      } else {
+        resp = { respuesta: 'terminar_proceso', nodoId: critico.id };
+        motivo = 'Proceso malicioso activo detectado → Ejecutando SIGKILL para expulsar al atacante.';
+      }
 
       const th: AgentThought = {
         ...base,
         observacion: `AMENAZA CRÍTICA en ${critico.nombre} (score ${(critico.score * 100).toFixed(0)}%, fase: ${critico.fase ?? 'activa'}).`,
-        razonamiento: resp.respuesta === 'aislar'
-          ? 'Riesgo inminente de robo de base de datos → Cuarentena eBPF inmediata para aislar el host.'
-          : 'Proceso hostil con privilegios detectado → Ejecutando SIGKILL para expulsar al atacante.',
+        razonamiento: motivo,
         accion: `${resp.respuesta} → ${critico.nombre}`,
       };
       e.pensar(th);
@@ -99,27 +120,48 @@ export const defensorHeuristico: DefenderPolicy = {
 
     // 2. Detección de robo de .env / documentos o reconocimiento anómalo
     const sospechosoRecon = activos.find(n => (n.senales['s_recon'] ?? 0) > 0.35 || (n.senales['s_tecnica'] ?? 0) > 0.4 || n.fase === 'recon');
-    if (sospechosoRecon && sospechosoRecon.score > 0.5) {
-      const resp: RespondIntent = { respuesta: 'parchear_env', nodoId: sospechosoRecon.id };
+    if (sospechosoRecon && sospechosoRecon.score > 0.45) {
+      const resp: RespondIntent = (sospechosoRecon.senales['s_reputacion'] ?? 0) > 0.3
+        ? { respuesta: 'rotate_keys', nodoId: sospechosoRecon.id }
+        : { respuesta: 'parchear_env', nodoId: sospechosoRecon.id };
       const th: AgentThought = {
         ...base,
-        observacion: `Sondeo o filtración de .env detectado en ${sospechosoRecon.nombre} (s_recon: ${(sospechosoRecon.senales['s_recon'] ?? 0).toFixed(2)}).`,
-        razonamiento: 'Rotando credenciales expuestas y securizando variables .env y documentos con zero downtime.',
-        accion: `parchear_env → ${sospechosoRecon.nombre}`,
+        observacion: `Sondeo o filtración detectada en ${sospechosoRecon.nombre} (s_recon: ${(sospechosoRecon.senales['s_recon'] ?? 0).toFixed(2)}).`,
+        razonamiento: resp.respuesta === 'rotate_keys'
+          ? 'Sondeo o pass-the-hash sospechoso → Revocando claves SSH y tickets Kerberos expuestos.'
+          : 'Rotando credenciales expuestas y securizando variables .env y documentos con zero downtime.',
+        accion: `${resp.respuesta} → ${sospechosoRecon.nombre}`,
       };
       e.pensar(th);
       return { intent: resp, thought: th };
     }
 
-    // 3. Nodos con score de anomalía por encima de umbral moderado
+    // 3. Proactividad: Parcheo de vulnerabilidades o despliegue de HoneyTokens
+    const vulnerable = activos.find(n => n.posturaDefensiva < 0.4 && n.vulnerabilidades.some(v => v.dificultad < 0.65));
+    if (vulnerable && e.tick % 4 === 0) {
+      const resp: RespondIntent = { respuesta: 'parchear_vuln', nodoId: vulnerable.id };
+      const th: AgentThought = {
+        ...base,
+        observacion: `Vulnerabilidades conocidas sin parchear en ${vulnerable.nombre} (resistencia baja).`,
+        razonamiento: 'Aplicando hotfix preventivo de seguridad para inmunizar el host frente a exploits RCE remotos.',
+        accion: `parchear_vuln → ${vulnerable.nombre}`,
+      };
+      e.pensar(th);
+      return { intent: resp, thought: th };
+    }
+
+    // 4. Nodos con score de anomalía por encima de umbral moderado
     const peor = activos.slice().sort((a, b) => b.score - a.score)[0];
-    if (peor && peor.score >= 0.6) {
+    if (peor && peor.score >= 0.55) {
       let resp: RespondIntent;
       let por: string;
       if (peor.fase && peor.compromisoReal) {
         resp = { respuesta: 'terminar_proceso', nodoId: peor.id };
         por = 'Proceso malicioso detectado en host comprometido → forzando terminación de sesión.';
-      } else if (peor.posturaDefensiva < 0.4) {
+      } else if (peor.posturaDefensiva < 0.35) {
+        resp = { respuesta: 'canary_token', nodoId: peor.id };
+        por = 'Anomalía moderada → sembrando HoneyTokens de alta fidelidad para tender una trampa canaria.';
+      } else if (peor.posturaDefensiva < 0.6) {
         resp = { respuesta: 'honeypot', nodoId: peor.id };
         por = 'Anomalía moderada → desplegando contenedor honeypot señuelo para desviar sondas.';
       } else {

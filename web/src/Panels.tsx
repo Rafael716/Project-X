@@ -196,8 +196,12 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
               {g.tecnicas.map(t => {
                 let aplicable = false;
                 if (sel.estado !== 'aislado') {
-                  if (t.id === 'scan_docs') {
+                  if (t.id === 'scan_docs' || t.id === 'sqli_dump' || t.id === 'phishing_spray') {
                     aplicable = true;
+                  } else if (t.id === 'dump_lsass') {
+                    aplicable = fi(sel.fase) >= fi('escalada');
+                  } else if (t.id === 'persist_backdoor') {
+                    aplicable = fi(sel.fase) >= fi('acceso_inicial');
                   } else if (t.id === 'pivot') {
                     aplicable = fi(sel.fase) < fi('acceso_inicial');
                   } else if (t.id === 'exfil') {
@@ -208,6 +212,21 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
                 }
 
                 const ruidoColor = t.ruido === 'alto' ? '#f43f5e' : t.ruido === 'medio' ? '#f59e0b' : '#10b981';
+                const iconMap: Record<string, string> = {
+                  scan_docs: '🔍',
+                  sqli_dump: '💉',
+                  dump_lsass: '🧬',
+                  persist_backdoor: '🚪',
+                  phishing_spray: '🎯',
+                  exploit: '💥',
+                  privesc: '⚡',
+                  pivot: '🔀',
+                  exfil: '💎',
+                  portscan: '📡',
+                  enum: '📋',
+                  bruteforce: '🔨',
+                };
+                const tIcon = iconMap[t.id] ?? '⚔️';
 
                 return (
                   <button
@@ -219,7 +238,7 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
                     onClick={() => g.send({ t: 'atacar', tecnicaId: t.id, nodoId: sel.id })}
                   >
                     <div className="tb-top">
-                      <span className="tb-name">{t.nombre}</span>
+                      <span className="tb-name">{tIcon} {t.nombre}</span>
                       <span className="tb-ruido" style={{ color: ruidoColor }}>Ruido {t.ruido}</span>
                     </div>
                     <span className="tb-desc">{t.descripcion}</span>
@@ -345,20 +364,38 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
           <div className="respuestas-section">
             <h4>Acciones de Respuesta Activa (eBPF / XDP / SecOps)</h4>
             <div className="respuestas-grid">
-              {g.respuestas.map(r => (
-                <button
-                  key={r.id}
-                  type="button"
-                  className={`respuesta-btn ${r.id}`}
-                  disabled={auto}
-                  title={r.descripcion}
-                  onClick={() => g.send({ t: 'responder', respuesta: r.id, nodoId: sel.id })}
-                >
-                  <span className="rb-name">{r.nombre}</span>
-                  <span className="rb-desc">{r.descripcion}</span>
-                  {r.comandoEjemplo && <code className="rb-cmd">{r.comandoEjemplo.replace('{target}', sel.id)}</code>}
-                </button>
-              ))}
+              {g.respuestas.map(r => {
+                const rIconMap: Record<string, { icon: string; badge: string; badgeCls: string }> = {
+                  aislar: { icon: '🛑', badge: 'Cuarentena Red', badgeCls: 'tag-aislar' },
+                  terminar_proceso: { icon: '⚡', badge: 'SIGKILL Directo', badgeCls: 'tag-kill' },
+                  parchear_env: { icon: '🔒', badge: 'Zero Downtime', badgeCls: 'tag-patch' },
+                  parchear_vuln: { icon: '🛡️', badge: 'Hotfix CVEs', badgeCls: 'tag-hotfix' },
+                  yara_memory_scan: { icon: '🔍', badge: 'Threat Hunting', badgeCls: 'tag-yara' },
+                  canary_token: { icon: '🐤', badge: 'HoneyToken', badgeCls: 'tag-canary' },
+                  rotate_keys: { icon: '🔑', badge: 'Revocación', badgeCls: 'tag-keys' },
+                  honeypot: { icon: '🍯', badge: 'Señuelo Activo', badgeCls: 'tag-honeypot' },
+                  bloquear_ip: { icon: '🚫', badge: 'Firewall XDP', badgeCls: 'tag-block' },
+                };
+                const meta = rIconMap[r.id] ?? { icon: '🛡️', badge: 'SecOps', badgeCls: 'tag-patch' };
+
+                return (
+                  <button
+                    key={r.id}
+                    type="button"
+                    className={`respuesta-btn ${r.id}`}
+                    disabled={auto}
+                    title={r.descripcion}
+                    onClick={() => g.send({ t: 'responder', respuesta: r.id, nodoId: sel.id })}
+                  >
+                    <div className="rb-top">
+                      <span className="rb-name">{meta.icon} {r.nombre}</span>
+                      <span className={`rb-tag ${meta.badgeCls}`}>{meta.badge}</span>
+                    </div>
+                    <span className="rb-desc">{r.descripcion}</span>
+                    {r.comandoEjemplo && <code className="rb-cmd">{r.comandoEjemplo.replace('{target}', sel.id)}</code>}
+                  </button>
+                );
+              })}
             </div>
             <p className="aviso">
               ⚠️ <b>Atención SecOps:</b> Aislar un nodo sin actividad hostil real genera penalización de disponibilidad (Falso Positivo).
