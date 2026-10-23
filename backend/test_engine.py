@@ -10,7 +10,7 @@ from engine import Engine
 from scenario import pymes01
 
 
-def _corre(seed, auto=True, limite=240):
+def _corre(seed, auto=True, limite=400):
     e = Engine(pymes01(), seed)
     i = 0
     while i < limite and not e.terminada():
@@ -50,7 +50,7 @@ def test_termina_con_ganador_valido():
 def test_cadena_completable_vs_pasivo():
     e = Engine(pymes01(), 131)
     i = 0
-    while i < 240 and not e.terminada():
+    while i < 400 and not e.terminada():
         e.avanzar(atacante_heuristico.decidir(e)[0], None)
         i += 1
     assert e.metricas()['datosExfiltrados'] > 0

@@ -19,7 +19,7 @@ export function TerminalView({ g, ladoForzado, height = 340 }: TerminalProps) {
   const [cliInput, setCliInput] = useState('');
   const [customHistory, setCustomHistory] = useState<Array<{ cmd: string; out: string; tipo: TerminalEntry['tipo'] }>>([]);
 
-  const logEndRef = useRef<HTMLDivElement>(null);
+  const bodyRef = useRef<HTMLDivElement>(null);
   const terminalLogs = st?.terminalLogs ?? [];
 
   // Filtrar logs del lado activo
@@ -32,9 +32,13 @@ export function TerminalView({ g, ladoForzado, height = 340 }: TerminalProps) {
   });
 
   useEffect(() => {
-    if (autoScroll && logEndRef.current) {
-      logEndRef.current.scrollIntoView({ behavior: 'smooth' });
-    }
+    // Scroll SOLO del contenedor del terminal (nunca scrollIntoView: arrastra
+    // toda la página cada tick). Y solo si el usuario ya está cerca del fondo,
+    // para no pelear con quien subió a leer el historial.
+    const el = bodyRef.current;
+    if (!autoScroll || !el) return;
+    const cercaDelFondo = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
+    if (cercaDelFondo) el.scrollTop = el.scrollHeight;
   }, [filtered.length, customHistory.length, autoScroll]);
 
   // Si cambia el rol de jugador, sincronizar tab inicial
@@ -210,7 +214,7 @@ export function TerminalView({ g, ladoForzado, height = 340 }: TerminalProps) {
       </div>
 
       {/* Terminal Body */}
-      <div className="term-body">
+      <div className="term-body" ref={bodyRef}>
         <div className="term-banner">
           {isRed ? (
             <pre className="banner-text red">
@@ -253,7 +257,6 @@ export function TerminalView({ g, ladoForzado, height = 340 }: TerminalProps) {
           </div>
         ))}
 
-        <div ref={logEndRef} />
       </div>
 
       {/* Terminal Input Prompt */}

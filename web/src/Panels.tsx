@@ -5,6 +5,16 @@ import type { SimNode, GameState, Role, Phase, LootItem } from '../../shared/pro
 const ORDEN: (Phase | null)[] = [null, 'recon', 'acceso_inicial', 'escalada', 'movimiento_lateral', 'exfiltracion'];
 const fi = (f: Phase | null) => ORDEN.indexOf(f);
 
+// Nombre amigable de cada fase (lo técnico queda solo en el código).
+const FASE_AMIGABLE: Record<string, string> = {
+  recon: 'Explorada',
+  acceso_inicial: 'Dentro',
+  escalada: 'Con control total',
+  movimiento_lateral: 'Usada para saltar',
+  exfiltracion: 'Datos robados',
+};
+const faseTexto = (f: Phase | null) => (f ? FASE_AMIGABLE[f] ?? f : 'Sin tocar');
+
 function miModo(st: GameState, role: Role) {
   return st.jugadores.find(j => j.role === role)?.modo ?? 'manual';
 }
@@ -33,18 +43,18 @@ function ModoSwitch({ g, role }: { g: Game; role: Role }) {
 
 export function KillChainTracker({ faseActual }: { faseActual: Phase | null }) {
   const fases: Array<{ key: Phase; label: string; icon: string }> = [
-    { key: 'recon', label: 'Reconocimiento', icon: '🔍' },
-    { key: 'acceso_inicial', label: 'Acceso Inicial', icon: '🚪' },
-    { key: 'escalada', label: 'Escalada Priv.', icon: '⚡' },
-    { key: 'movimiento_lateral', label: 'Pivote Lateral', icon: '🔀' },
-    { key: 'exfiltracion', label: 'Exfiltración', icon: '💎' },
+    { key: 'recon', label: '1. Explorar', icon: '🔍' },
+    { key: 'acceso_inicial', label: '2. Entrar', icon: '🚪' },
+    { key: 'escalada', label: '3. Hacerse admin', icon: '⚡' },
+    { key: 'movimiento_lateral', label: '4. Saltar de PC', icon: '🔀' },
+    { key: 'exfiltracion', label: '5. Robar datos', icon: '💎' },
   ];
 
   const currentIdx = fi(faseActual);
 
   return (
     <div className="killchain-tracker">
-      <div className="kc-title">Kill Chain MITRE ATT&CK</div>
+      <div className="kc-title">Pasos del ataque <span style={{ opacity: 0.6, fontWeight: 400 }}>(estilo MITRE ATT&CK)</span></div>
       <div className="kc-steps">
         {fases.map((f, i) => {
           const reached = currentIdx >= i + 1;
@@ -128,7 +138,7 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
       {auto && (
         <div className="agent-active-notice red">
           <span className="pulse-dot" />
-          <span><b>Agente IA Atacante activo:</b> buscando vulnerabilidades (.env, docs, exploits) y pivotando en vivo.</span>
+          <span><b>Agente automático jugando:</b> está explorando, entrando y robando datos solo. Cambia a 🧑 Manual para jugar tú.</span>
         </div>
       )}
 
@@ -138,7 +148,7 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
       {!sel ? (
         <div className="select-prompt">
           <span className="prompt-icon">🎯</span>
-          <p>Selecciona un host de la red para lanzar reconocimiento profundo, volcado de .env o explotación.</p>
+          <p><b>¿Qué hago?</b> Haz clic en una PC del mapa y elige una acción abajo. Tu meta: <b>tomar TODAS las máquinas de la red</b> (ganas solo cuando las tienes todas). Avanza PC por PC.</p>
         </div>
       ) : (
         <div className="target-section">
@@ -152,9 +162,9 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
             </div>
 
             <div className="target-pills">
-              <span><b>Fase actual:</b> {sel.fase ?? 'Sin acceso'}</span>
-              <span><b>Servicios:</b> {sel.servicios.join(', ')}</span>
-              <span><b>Valor objetivo:</b> {sel.valor} pts</span>
+              <span><b>Estado:</b> {faseTexto(sel.fase)}</span>
+              <span><b>Programas:</b> {sel.servicios.join(', ')}</span>
+              <span><b>Datos que guarda:</b> {sel.valor} MB</span>
             </div>
 
             {/* Archivos sensibles en el nodo */}
@@ -178,7 +188,7 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
             {/* Vulnerabilidades conocidas */}
             {sel.vulnerabilidades && sel.vulnerabilidades.length > 0 && (
               <div className="target-vulns">
-                <div className="tf-label">Vulnerabilidades identificadas:</div>
+                <div className="tf-label">Fallas encontradas:</div>
                 {sel.vulnerabilidades.map(v => (
                   <div key={v.id} className="vuln-item">
                     <span className="vuln-cve">{v.cve ?? 'CVE-PENDIENTE'}</span>
@@ -192,7 +202,7 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
           </div>
 
           <div className="tecnicas-section">
-            <h4>Técnicas y Exploits Disponibles</h4>
+            <h4>¿Qué quieres hacer? Elige una acción 👇</h4>
             <div className="tecnicas-grid">
               {g.tecnicas.map(t => {
                 let aplicable = false;
@@ -283,7 +293,7 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
       {auto && (
         <div className="agent-active-notice blue">
           <span className="pulse-dot blue" />
-          <span><b>Agente IA Defensor activo:</b> monitoreando telemetría eBPF/TGNN y ejecutando contramedidas activas.</span>
+          <span><b>Agente automático jugando:</b> está vigilando la red y defendiendo solo. Cambia a 🧑 Manual para jugar tú.</span>
         </div>
       )}
 
@@ -292,26 +302,26 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
         <div className="data-leak-alert">
           <span className="dla-icon">🚨</span>
           <div>
-            <b>¡Fuga de Información Detectada!</b>
-            <p>{loot.length} archivos sensibles (.env / docs) han sido sondeados o sustraídos por el atacante.</p>
+            <b>¡Cuidado, te están robando archivos!</b>
+            <p>El atacante ya husmeó o se llevó {loot.length} archivos importantes. Defiende las PCs en alarma.</p>
           </div>
         </div>
       )}
 
       {/* Telemetría y Alertas TGNN */}
       <div className="alertas-section">
-        <h4>Alertas Recientes (Detector TGNN Explicable)</h4>
+        <h4>🚨 Alarmas recientes</h4>
         {alertas.length === 0 ? (
-          <p className="muted">Sin anomalías críticas registradas en los probes eBPF.</p>
+          <p className="muted">Todo tranquilo por ahora. Nada raro en la red.</p>
         ) : (
           <div className="alertas-list">
             {alertas.map((a, i) => (
               <div key={i} className={`alerta-card ${a.verdadera ? 'real' : 'fp'}`}>
                 <div className="ac-top">
                   <b>{st.nodos.find(n => n.id === a.nodoId)?.nombre ?? a.nodoId}</b>
-                  <span className="ac-score">Anomalía {(a.score * 100).toFixed(0)}%</span>
+                  <span className="ac-score">Sospecha {(a.score * 100).toFixed(0)}%</span>
                   <span className={`ac-type ${a.verdadera ? 'tag-tp' : 'tag-fp'}`}>
-                    {a.verdadera ? 'Compromiso Real' : 'Posible FP'}
+                    {a.verdadera ? 'Amenaza real' : 'Quizá falsa alarma'}
                   </span>
                 </div>
                 <div className="ac-signals">
@@ -333,7 +343,7 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
       {!sel ? (
         <div className="select-prompt">
           <span className="prompt-icon">🛡️</span>
-          <p>Selecciona un nodo en la red para inspeccionar su telemetría y desplegar contramedidas de mitigación.</p>
+          <p><b>¿Qué hago?</b> Vigila las alarmas y haz clic en la PC sospechosa para defenderla. Tu meta: <b>aguantar hasta que se acabe el tiempo</b> — si el atacante no toma TODAS las máquinas, ganas tú. Ojo: defender una PC sana molesta a los usuarios y te baja puntos.</p>
         </div>
       ) : (
         <div className="target-section">
@@ -348,7 +358,7 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
 
             <div className="score-meter">
               <div className="sm-label">
-                <span>Nivel de Anomalía detectado:</span>
+                <span>Nivel de sospecha:</span>
                 <b>{(sel.score * 100).toFixed(0)}%</b>
               </div>
               <div className="sm-bar">
@@ -363,25 +373,25 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
             </div>
 
             <div className="target-pills">
-              <span><b>Postura defensiva:</b> {(sel.posturaDefensiva * 100).toFixed(0)}%</span>
-              <span><b>Valor del activo:</b> {sel.valor} pts</span>
+              <span><b>Qué tan protegida está:</b> {(sel.posturaDefensiva * 100).toFixed(0)}%</span>
+              <span><b>Datos que guarda:</b> {sel.valor} MB</span>
             </div>
           </div>
 
           <div className="respuestas-section">
-            <h4>Acciones de Respuesta Activa (eBPF / XDP / SecOps)</h4>
+            <h4>¿Cómo la defiendes? Elige una acción 👇</h4>
             <div className="respuestas-grid">
               {g.respuestas.map(r => {
                 const rIconMap: Record<string, { icon: string; badge: string; badgeCls: string }> = {
-                  aislar: { icon: '🛑', badge: 'Cuarentena Red', badgeCls: 'tag-aislar' },
-                  terminar_proceso: { icon: '⚡', badge: 'SIGKILL Directo', badgeCls: 'tag-kill' },
-                  parchear_env: { icon: '🔒', badge: 'Zero Downtime', badgeCls: 'tag-patch' },
-                  parchear_vuln: { icon: '🛡️', badge: 'Hotfix CVEs', badgeCls: 'tag-hotfix' },
-                  yara_memory_scan: { icon: '🔍', badge: 'Threat Hunting', badgeCls: 'tag-yara' },
-                  canary_token: { icon: '🐤', badge: 'HoneyToken', badgeCls: 'tag-canary' },
-                  rotate_keys: { icon: '🔑', badge: 'Revocación', badgeCls: 'tag-keys' },
-                  honeypot: { icon: '🍯', badge: 'Señuelo Activo', badgeCls: 'tag-honeypot' },
-                  bloquear_ip: { icon: '🚫', badge: 'Firewall XDP', badgeCls: 'tag-block' },
+                  aislar: { icon: '🛑', badge: 'Desconectar', badgeCls: 'tag-aislar' },
+                  terminar_proceso: { icon: '⚡', badge: 'Cerrar programa', badgeCls: 'tag-kill' },
+                  parchear_env: { icon: '🔒', badge: 'Contraseñas', badgeCls: 'tag-patch' },
+                  parchear_vuln: { icon: '🛡️', badge: 'Reparar', badgeCls: 'tag-hotfix' },
+                  yara_memory_scan: { icon: '🔍', badge: 'Revisar memoria', badgeCls: 'tag-yara' },
+                  canary_token: { icon: '🐤', badge: 'Cebo', badgeCls: 'tag-canary' },
+                  rotate_keys: { icon: '🔑', badge: 'Cambiar llaves', badgeCls: 'tag-keys' },
+                  honeypot: { icon: '🍯', badge: 'Trampa', badgeCls: 'tag-honeypot' },
+                  bloquear_ip: { icon: '🚫', badge: 'Bloquear', badgeCls: 'tag-block' },
                 };
                 const meta = rIconMap[r.id] ?? { icon: '🛡️', badge: 'SecOps', badgeCls: 'tag-patch' };
                 const sinEnergia = r.costo > energia;

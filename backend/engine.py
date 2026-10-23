@@ -48,7 +48,9 @@ class Engine:
         self.loot = []
         self.terminalLogs = []
         self.tick = 0
-        self.tickMax = esc['tickMax']
+        # Duración con algo de azar (sembrado) para que cada partida se sienta
+        # distinta y dure al menos ~1 min: +0..48 ticks (0..12 s) sobre la base.
+        self.tickMax = esc['tickMax'] + self.rng.irange(0, 48)
         self.detector = Detector(umbral=config.DETECTOR_UMBRAL)
         self._firstMaliciousTick = None
         self._firstTrueAlertTick = None
@@ -65,11 +67,11 @@ class Engine:
         self.puntos = {'attacker': 0, 'defender': 0}
         self.combo = {'attacker': 0, 'defender': 0}
 
-        self._log(tipo='sistema', texto=f"Escenario {esc['nombre']} cargado. Objetivo del atacante: exfiltrar {self.nodo_nombre(esc['objetivo'])}.")
-        self.log_terminal('attacker', 'projectx-c2 --init --stealth-profile',
-                          f"[+] C2 Console activada. Red: {esc['nombre']} | Entrada: {esc['entrada']} | Objetivo: {self.nodo_nombre(esc['objetivo'])}", 'cmd')
-        self.log_terminal('defender', 'systemctl status ebpf-soc-daemon',
-                          "[+] SOC SecOps activo. Monitores eBPF/XDP desplegados. Analizador TGNN en escucha.", 'cmd')
+        self._log(tipo='sistema', texto=f"Partida lista en {esc['nombre']}. El atacante quiere robar los datos de {self.nodo_nombre(esc['objetivo'])}.")
+        self.log_terminal('attacker', 'iniciar-ataque',
+                          f"Listo para atacar. Red: {esc['nombre']} · Entras por: {self.nodo_nombre(esc['entrada'])} · Meta: robar los datos de {self.nodo_nombre(esc['objetivo'])}.", 'cmd')
+        self.log_terminal('defender', 'iniciar-defensa',
+                          "Vigilancia activada. Estoy observando toda la red para detectar cualquier cosa rara.", 'cmd')
 
     # --------- consultas (CQS: puras) ----------
     def nodo(self, nid):
@@ -149,6 +151,14 @@ class Engine:
     def disponibilidad(self):
         return clamp(1 - self._penalDisponibilidad / self.suma_valor, 0, 1)
 
+    def maquinas_tomadas(self):
+        """Cuántas máquinas tiene el atacante AHORA (comprometidas y no aisladas)."""
+        return sum(1 for n in self.nodos if n['compromisoReal'] and n['estado'] != 'aislado')
+
+    def todas_tomadas(self):
+        """True si el atacante tiene TODAS las máquinas de la red (condición de victoria)."""
+        return self.maquinas_tomadas() == len(self.nodos)
+
     def _resistencia(self, n):
         vulns = n['vulnerabilidades']
         if not vulns:
@@ -203,13 +213,16 @@ class Engine:
         p_exito = self.prob_exito(t.id, n)
         exito = self.rng.chance(p_exito)
 
+        # ruido/fase viajan como DATOS del evento (no incrustados en el texto) para
+        # que el detector no dependa de cómo esté redactado el mensaje.
         self._log(tipo='ataque', lado='attacker', nodoId=n['id'], malicioso=True, exito=exito,
-                  texto=f"{t.nombre} sobre {n['nombre']} [ruido:{t.ruido}] (p={p_exito:.2f}) -> {'ÉXITO' if exito else 'fallo'}")
+                  ruido=t.ruido, fase=t.faseProduce,
+                  texto=f"{t.nombre} en {n['nombre']} → {'funcionó' if exito else 'falló'}")
 
         if not exito:
             self.combo['attacker'] = 0
-            self.log_terminal('attacker', cmd_str, f"[-] PROBE FAILED: {n['nombre']} resistió (p={round(p_exito*100)}%).", 'error', n['id'])
-            self.log_terminal('defender', 'ebpf_trace -e net_drop', f"[eBPF] Conexión sospechosa mitigada en {n['nombre']} [ruido: {t.ruido}]", 'alerta', n['id'])
+            self.log_terminal('attacker', cmd_str, f"No funcionó: {n['nombre']} resistió (tenías {round(p_exito*100)}% de chance).", 'error', n['id'])
+            self.log_terminal('defender', 'vigilancia', f"Bloqueé algo sospechoso que venía hacia {n['nombre']}.", 'alerta', n['id'])
             return
 
         salida = t.efecto(self, n)                 # <-- enlace dinámico (Sesión 2)
@@ -219,14 +232,14 @@ class Engine:
         self.sincronizar_estado(n)
         self.aristas.append({'from': 'atacante', 'to': n['id'], 'tipo': 'actividad', 'edad': 0})
         self.log_terminal('attacker', cmd_str, salida, 'exito', n['id'])
-        self.log_terminal('defender', f"ebpf_probe --host {n['nombre']}",
-                          f"[eBPF] Tráfico hostil en {n['nombre']} [técnica: {t.nombre}, ruido: {t.ruido}]",
+        self.log_terminal('defender', 'vigilancia',
+                          f"Detecté actividad rara en {n['nombre']} (parece: {t.nombre}).",
                           'alerta' if t.ruido == 'alto' else 'output', n['id'])
 
     def _rechazo(self, lado, i, t, cmd_str, motivo):
         self._log(tipo='ataque', lado=lado, nodoId=i['nodoId'], malicioso=True, exito=False,
-                  texto=f"{t.nombre if t else i['tecnicaId']}: rechazado ({motivo})")
-        self.log_terminal(lado, cmd_str, f"[-] REJECTED: {motivo}", 'error', i['nodoId'])
+                  texto=f"{t.nombre if t else i['tecnicaId']}: no se pudo ({motivo})")
+        self.log_terminal(lado, cmd_str, f"No se pudo: {motivo}", 'error', i['nodoId'])
 
     # --------- resolver respuesta ----------
     def _resolver_respuesta(self, i):
@@ -236,7 +249,7 @@ class Engine:
             return
         cmd = (r.comandoEjemplo or f"{i['respuesta']} {i['nodoId']}").replace('{target}', n['nombre'])
         if self.energia['defender'] < r.costo:
-            self.log_terminal('defender', cmd, f"[-] SIN ENERGÍA: {r.nombre} cuesta {r.costo} (tienes {self.energia['defender']})", 'error', n['id'])
+            self.log_terminal('defender', cmd, f"Sin energía: '{r.nombre}' cuesta {r.costo} y tienes {self.energia['defender']}. Espera a que se recargue.", 'error', n['id'])
             return
 
         self.energia['defender'] -= r.costo
@@ -246,9 +259,9 @@ class Engine:
         self._puntuar('defender', r.puntos if hostil else r.puntos_fp)
         self.eventos.append({'tick': self.tick, 'id': f"r{self.tick}-{n['id']}", 'tipo': 'respuesta',
                              'lado': 'defender', 'nodoId': n['id'], 'texto': res.texto})
-        self.log_terminal('defender', cmd, f"[+] DEFENSE: {res.texto}", 'exito', n['id'])
+        self.log_terminal('defender', cmd, f"✔ {res.texto}", 'exito', n['id'])
         if res.eco:
-            self.log_terminal('attacker', 'session_check', res.eco, 'error', n['id'])
+            self.log_terminal('attacker', 'revisar-acceso', res.eco, 'error', n['id'])
 
     # --------- puntaje / combos ----------
     def _puntuar(self, lado, base):
@@ -267,9 +280,9 @@ class Engine:
                 n.update(estado='limpio', fase=None, compromisoReal=False, persistente=False,
                          score=0, senales={}, aisladoHasta=None)
                 n['posturaDefensiva'] *= 0.5
-                self._log(tipo='sistema', nodoId=n['id'], texto=f"{n['nombre']} vuelve online (remediado)")
-                self.log_terminal('defender', f"xdp_filter --restore --host {n['nombre']}",
-                                  f"[SOC] {n['nombre']} restaurado tras desinfección.", 'output', n['id'])
+                self._log(tipo='sistema', nodoId=n['id'], texto=f"{n['nombre']} volvió a funcionar (ya está limpia).")
+                self.log_terminal('defender', 'reconectar',
+                                  f"{n['nombre']} reconectada y limpia, lista para trabajar.", 'output', n['id'])
 
     def _ruido_benigno(self):
         activos = [x for x in self.nodos if x['estado'] != 'aislado']
@@ -311,9 +324,9 @@ class Engine:
         for al in self.detector.califica(self.nodos, self.tick):
             self.alertas.append(al)
             self._log(tipo='deteccion', lado='defender', nodoId=al['nodoId'],
-                      texto=f"ALERTA en {self.nodo_nombre(al['nodoId'])} score={al['score']} {'' if al['verdadera'] else '(posible falso positivo)'}")
-            self.log_terminal('defender', f"tgnn_anomaly_eval --node {al['nodoId']}",
-                              f"🚨 ALERTA TGNN: Anomalía {al['score']*100:.1f}% en {self.nodo_nombre(al['nodoId'])} | Vectores: {al['senales']}", 'alerta', al['nodoId'])
+                      texto=f"¡Alarma! Algo raro en {self.nodo_nombre(al['nodoId'])} (nivel {round(al['score']*100)}%){'' if al['verdadera'] else ' — quizá sea falsa alarma'}")
+            self.log_terminal('defender', 'alarma',
+                              f"🚨 Alarma en {self.nodo_nombre(al['nodoId'])}: actividad sospechosa al {round(al['score']*100)}%. ¡Revísala!", 'alerta', al['nodoId'])
             if al['verdadera'] and self._firstTrueAlertTick is None:
                 self._firstTrueAlertTick = self.tick
         if self._firstTrueAlertTick is not None and self._containmentTick is None:
@@ -325,21 +338,16 @@ class Engine:
 
     # --------- fin de partida ----------
     def terminada(self):
-        return (self.datos_exfiltrados >= self.meta_exfiltracion
-                or self.puntos['attacker'] >= self.PUNTOS_META
-                or self.puntos['defender'] >= self.PUNTOS_META
-                or self.tick >= self.tickMax)
+        # La partida termina SOLO cuando el atacante se queda con TODAS las
+        # máquinas de la red, o cuando se acaba el tiempo (el defensor aguantó).
+        # Nada más la corta antes: robar datos o bajar la disponibilidad dan
+        # puntos, pero no terminan la partida.
+        return self.todas_tomadas() or self.tick >= self.tickMax
 
     def ganador(self):
-        if self.datos_exfiltrados >= self.meta_exfiltracion or self.puntos['attacker'] >= self.PUNTOS_META:
-            return 'attacker'
-        if self.puntos['defender'] >= self.PUNTOS_META:
-            return 'defender'
-        if self.disponibilidad() < 0.5:
-            return 'attacker'
-        if self.puntos['attacker'] == self.puntos['defender']:
-            return 'empate'
-        return 'defender' if self.puntos['defender'] > self.puntos['attacker'] else 'attacker'
+        # Gana el atacante solo si tomó TODA la red; si se acabó el tiempo sin
+        # lograrlo, gana el defensor por haber aguantado.
+        return 'attacker' if self.todas_tomadas() else 'defender'
 
     def metricas(self):
         return {
@@ -358,6 +366,8 @@ class Engine:
             'energiaMax': self.ENERGIA_MAX,
             'comboAtacante': self.combo['attacker'],
             'comboDefensor': self.combo['defender'],
+            'maquinasTomadas': self.maquinas_tomadas(),
+            'maquinasTotales': len(self.nodos),
         }
 
     # --------- utilidades ----------

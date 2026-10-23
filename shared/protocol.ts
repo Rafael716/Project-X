@@ -108,6 +108,8 @@ export interface Metrics {
   energiaMax: number;
   comboAtacante: number;
   comboDefensor: number;
+  maquinasTomadas: number;
+  maquinasTotales: number;
 }
 
 export interface PlayerSlot {

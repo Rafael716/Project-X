@@ -29,3 +29,7 @@ class Rng:
 
     def pick(self, arr: list):
         return arr[int(self.next() * len(arr))]
+
+    def irange(self, lo: int, hi: int) -> int:
+        """Entero en [lo, hi] (ambos incluidos), sembrado -> replay determinista."""
+        return lo + int(self.next() * (hi - lo + 1))

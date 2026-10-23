@@ -179,30 +179,36 @@ function MetricsBar({ g, st }: { g: Game; st: GameState }) {
       </div>
 
       <Metric
-        label="Exfiltración"
+        label="Máquinas tomadas"
+        val={`${m.maquinasTomadas} / ${m.maquinasTotales}`}
+        tone={m.maquinasTomadas >= m.maquinasTotales ? 'rojo' : m.maquinasTomadas > 0 ? 'alerta' : 'normal'}
+        icon="🖥️"
+      />
+      <Metric
+        label="Datos robados"
         val={`${m.datosExfiltrados} / ${m.metaExfiltracion} MB`}
         tone={m.datosExfiltrados > 0 ? 'rojo' : 'normal'}
         icon="💎"
       />
       <Metric
-        label="Disponibilidad"
+        label="Red funcionando"
         val={`${Math.round(m.disponibilidad * 100)}%`}
         tone={m.disponibilidad < 0.6 ? 'alerta' : 'azul'}
         icon="🛡️"
       />
       <Metric
-        label="MTTD (Detección)"
-        val={m.mttd === null ? '—' : `${m.mttd} ticks`}
+        label="Tardó en detectar"
+        val={m.mttd === null ? '—' : `${m.mttd} turnos`}
         icon="⏱️"
       />
       <Metric
-        label="MTTR (Contención)"
-        val={m.mttr === null ? '—' : `${m.mttr} ticks`}
+        label="Tardó en frenar"
+        val={m.mttr === null ? '—' : `${m.mttr} turnos`}
         icon="⏳"
       />
       <Metric
-        label="Alertas eBPF"
-        val={`${m.alertasTotales} (${m.alertasFalsas} FP)`}
+        label="Alarmas"
+        val={`${m.alertasTotales} (${m.alertasFalsas} falsas)`}
         icon="🚨"
       />
 

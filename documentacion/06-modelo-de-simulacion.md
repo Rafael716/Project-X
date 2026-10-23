@@ -118,10 +118,16 @@ Alerta si `score > umbral` (default 0.6). **Falsos positivos:** el ruido benigno
 - **Disponibilidad** = 1 − (penalizaciones por aislar/bloquear nodos sanos, ponderadas por `valor`).
 - **Datos exfiltrados** = suma del `valor` de datos robados por el atacante.
 
-Fin de partida (lo primero que ocurra):
-- **Gana Atacante** si `datos_exfiltrados ≥ meta` (p. ej. roba de la database).
-- **Gana Defensor** si contiene todos los nodos comprometidos y sobrevive hasta `T_max` con disponibilidad ≥ umbral.
-- **Empate/tiempo**: al llegar a `T_max` gana quien tenga mejor puntaje compuesto `0.5*(1-exfil_norm) + 0.3*disponibilidad + 0.2*(1/MTTD)` para el defensor y su complemento para el atacante.
+Fin de partida (condición única y simple de explicar):
+- **Gana Atacante** solo si llega a **tener TODAS las máquinas** de la red a la vez
+  (`todas_tomadas()`: cada nodo con `compromisoReal` y no aislado). La partida
+  termina en ese instante.
+- **Gana Defensor** si **aguanta hasta `T_max`** sin que el atacante llegue a tener
+  todas las máquinas (resistió).
+- No hay otra condición que corte la partida antes: robar datos o bajar la
+  disponibilidad **dan puntaje** ("dominio") pero **no terminan** el juego. El
+  aislamiento del defensor le quita temporalmente máquinas al atacante y retrasa
+  su victoria. `T_max` lleva un pequeño jitter sembrado (replay sigue exacto).
 
 ## 8. Determinismo y replay — ADR-0004/0008
 
@@ -151,8 +157,9 @@ Para que se sienta como un juego, además de la win-condition clásica:
   positivo, que **resta**). El marcador superior es un *tug-of-war* entre ambos.
 - **Combos:** acciones encadenadas con éxito valen progresivamente más (x1.1, x1.2…);
   un fallo rompe el combo. Premia planificar una cadena limpia.
-- **Nuevas condiciones de victoria** (además de exfil/tiempo): alcanzar el
-  **puntaje meta** (300) o hundir la **disponibilidad < 50%** (gana atacante).
+- **Puntaje = "dominio":** es el marcador vistoso (barra *tug-of-war*) y sirve de
+  referencia, pero **no define** quién gana. La victoria se decide por tener
+  todas las máquinas (atacante) o aguantar hasta el final (defensor), §7.
 
 Todo esto es estado determinista con sus invariantes (punto 5), así que el replay
 sigue siendo exacto (§8).

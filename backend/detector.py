@@ -2,13 +2,10 @@
 Port de detector.ts: señales con decaimiento EWMA por nodo -> score 0..1."""
 
 import math
-import re
 
 DECAY = 0.82  # memoria temporal (la "ventana" del TGNN)
 PESOS = {'s_recon': 1.4, 's_fanout': 1.0, 's_rareza': 1.6, 's_tecnica': 1.8, 's_reputacion': 1.2}
 SESGO = 2.4
-
-_RE_RECON = re.compile(r'recon|barrido|enumer', re.IGNORECASE)
 
 
 def _sigmoid(x: float) -> float:
@@ -37,9 +34,11 @@ class Detector:
             s[k] = s.get(k, 0) + v
 
         if ev['tipo'] == 'ataque':
-            texto = ev['texto']
-            ruido = 0.9 if '[ruido:alto]' in texto else 0.55 if '[ruido:medio]' in texto else 0.25
-            if _RE_RECON.search(texto):
+            nivel = ev.get('ruido', 'medio')
+            ruido = 0.9 if nivel == 'alto' else 0.55 if nivel == 'medio' else 0.25
+            # El reconocimiento ruidoso (escaneo/enumeración) dispara la señal de recon;
+            # la búsqueda sigilosa de archivos (ruido bajo) no, igual que antes.
+            if ev.get('fase') == 'recon' and nivel != 'bajo':
                 add('s_recon', ruido)
             add('s_tecnica', ruido)
             add('s_rareza', 0.5 * ruido)

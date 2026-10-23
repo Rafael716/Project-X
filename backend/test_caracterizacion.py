@@ -17,10 +17,11 @@ from scenario import cargar_escenario
 import agents
 
 
-def _jugar(escenario_id: str, semilla: int, ticks: int):
-    """Autoplay determinista del atacante (defensor pasivo). Devuelve la foto final."""
+def _jugar(escenario_id: str, semilla: int, cap: int = 600):
+    """Autoplay determinista del atacante (defensor pasivo) hasta que termina.
+    Devuelve la foto final."""
     e = Engine(cargar_escenario(escenario_id), semilla)
-    for _ in range(ticks):
+    for _ in range(cap):
         intent, _ = agents.atacante_decidir(e)
         e.avanzar(intent, None)
         if e.terminada():
@@ -34,27 +35,27 @@ def _jugar(escenario_id: str, semilla: int, ticks: int):
     }
 
 
-# Golden fotografiado el 2026-10-23 (ver docstring para re-generar).
+# Golden fotografiado el 2026-10-23 tras el reajuste de balance (ver docstring).
 GOLDEN = {
-    ('pymes01', 777): {'tick': 240, 'exfil': 0, 'puntosA': 300, 'ganador': 'attacker', 'alertas': 40},
-    ('datacenter02', 42): {'tick': 240, 'exfil': 0, 'puntosA': 300, 'ganador': 'attacker', 'alertas': 60},
+    ('pymes01', 777): {'tick': 61, 'exfil': 0, 'puntosA': 191, 'ganador': 'attacker', 'alertas': 49},
+    ('datacenter02', 42): {'tick': 122, 'exfil': 0, 'puntosA': 225, 'ganador': 'attacker', 'alertas': 60},
 }
 
 
 def test_caracterizacion_pymes01():
-    assert _jugar('pymes01', 777, 240) == GOLDEN[('pymes01', 777)]
+    assert _jugar('pymes01', 777) == GOLDEN[('pymes01', 777)]
 
 
 def test_caracterizacion_datacenter02():
-    assert _jugar('datacenter02', 42, 300) == GOLDEN[('datacenter02', 42)]
+    assert _jugar('datacenter02', 42) == GOLDEN[('datacenter02', 42)]
 
 
 def test_caracterizacion_es_reproducible():
     """La misma entrada dos veces da la misma foto (base del replay, ADR-0008)."""
-    assert _jugar('pymes01', 777, 240) == _jugar('pymes01', 777, 240)
+    assert _jugar('pymes01', 777) == _jugar('pymes01', 777)
 
 
 if __name__ == '__main__':
     # re-generar golden tras un cambio intencional
     for (sid, seed) in GOLDEN:
-        print(sid, seed, _jugar(sid, seed, 300))
+        print(sid, seed, _jugar(sid, seed))
