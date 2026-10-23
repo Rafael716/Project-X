@@ -54,14 +54,19 @@ Identificadores: **RF** = requerimiento funcional, **RNF** = no funcional. Prior
 | RNF-03 | Reproducibilidad | Partida determinista dada semilla + acciones | 100 % reproducible en replay |
 | RNF-04 | Usabilidad | Curva de aprendizaje | Estudiante entiende la UI en < 2 min; textos en español |
 | RNF-05 | Accesibilidad | Contraste y teclado | WCAG AA de contraste; foco visible; navegable por teclado |
-| RNF-06 | Portabilidad | Ejecutable en Win/mac/Linux | `npm install && npm run dev`, sin GPU ni admin |
+| RNF-06 | Portabilidad | Ejecutable en Win/mac/Linux | `pip install` + `python app.py` (y build de la web), sin GPU ni admin |
 | RNF-07 | Resiliencia | Reconexión de cliente | Si un cliente cae y vuelve con el mismo código, retoma el estado |
 | RNF-08 | Seguridad (del propio simulador) | No ejecutar nada real | Sin `eval`, sin shell, sin red externa; entrada validada en el servidor |
-| RNF-09 | Mantenibilidad | Un solo lenguaje, tipos compartidos | Protocolo tipado compartido entre front y back |
-| RNF-10 | Observabilidad | Trazas de agente y log de eventos | Todo evento y decisión IA queda en el log de la partida |
+| RNF-09 | Mantenibilidad | Contrato tipado compartido front↔back | `shared/protocol.ts` es la única fuente de verdad de la forma de datos |
+| RNF-10 | Observabilidad | Trazas de agente y log estructurado | Todo evento/decisión IA queda en el log; servidor emite JSON con `correlation_id` (Semana 5) |
+| RNF-11 | Robustez de entrada | Toda entrada del cliente se valida en la frontera | Barricada de 3 capas; ningún mensaje malformado llega al núcleo (Semana 4) — `backend/barricada.py` |
+| RNF-12 | Corrección por contrato | Invariantes verificados en ejecución | `invariantes_del_motor()` corre cada tick; viola ⇒ `ContratoRoto` fail-fast (Semana 3) |
+| RNF-13 | Tolerancia a fallas | El tick no cae ni se congela por un agente o un cliente abusivo | Circuit breaker + contrapresión (429) + degradación a política mínima (Semana 7) — `backend/resiliencia.py` |
+| RNF-14 | Seguridad de concurrencia | Escrituras concurrentes al mismo socket no corrompen el stream | Candado por-socket con timeout; tick atómico (Semana 6) — `backend/app.py` |
 
 ## 3. Trazabilidad requerimiento → documento
 
 - Arquitectura que satisface RNF-01/02/09: `04-arquitectura-c4.md`, `ADR-0001`, `ADR-0003`.
+- Construcción robusta (RNF-11/12/13/14): `07-construccion-sw707.md` y ADR-0009 a 0014.
 - Modelo que satisface RF-11/13/20-22/30-33: `06-modelo-de-simulacion.md`.
 - Flujos que satisfacen RF-01-05/40: `05-diagramas.md` (casos de uso, estados, secuencia).

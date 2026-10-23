@@ -113,6 +113,7 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
   const st = g.estado!;
   const auto = miModo(st, 'attacker') === 'autoplay';
   const loot = st.loot ?? [];
+  const energia = st.metricas.energiaAtacante;
 
   return (
     <div className="panel lado-atacante">
@@ -227,14 +228,15 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
                   bruteforce: '🔨',
                 };
                 const tIcon = iconMap[t.id] ?? '⚔️';
+                const sinEnergia = t.costo > energia;
 
                 return (
                   <button
                     key={t.id}
                     type="button"
-                    className={`tecnica-btn ${aplicable ? 'ready' : 'locked'}`}
-                    disabled={auto || !aplicable}
-                    title={t.descripcion}
+                    className={`tecnica-btn ${aplicable && !sinEnergia ? 'ready' : 'locked'}`}
+                    disabled={auto || !aplicable || sinEnergia}
+                    title={sinEnergia ? `Necesitas ${t.costo} de energía (tienes ${energia})` : t.descripcion}
                     onClick={() => g.send({ t: 'atacar', tecnicaId: t.id, nodoId: sel.id })}
                   >
                     <div className="tb-top">
@@ -242,6 +244,10 @@ export function AttackPanel({ g, sel }: { g: Game; sel: SimNode | null }) {
                       <span className="tb-ruido" style={{ color: ruidoColor }}>Ruido {t.ruido}</span>
                     </div>
                     <span className="tb-desc">{t.descripcion}</span>
+                    <div className="tb-costs">
+                      <span className={`cost-chip ${sinEnergia ? 'cant' : ''}`}>⚡ {t.costo}</span>
+                      {t.puntos > 0 && <span className="cost-chip pts">★ {t.puntos}</span>}
+                    </div>
                     {t.comandoEjemplo && <code className="tb-cmd">{t.comandoEjemplo.replace('{target}', sel.id)}</code>}
                   </button>
                 );
@@ -262,6 +268,7 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
   const auto = miModo(st, 'defender') === 'autoplay';
   const alertas = [...st.alertas].reverse().slice(0, 6);
   const loot = st.loot ?? [];
+  const energia = st.metricas.energiaDefensor;
 
   return (
     <div className="panel lado-defensor">
@@ -377,14 +384,15 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
                   bloquear_ip: { icon: '🚫', badge: 'Firewall XDP', badgeCls: 'tag-block' },
                 };
                 const meta = rIconMap[r.id] ?? { icon: '🛡️', badge: 'SecOps', badgeCls: 'tag-patch' };
+                const sinEnergia = r.costo > energia;
 
                 return (
                   <button
                     key={r.id}
                     type="button"
-                    className={`respuesta-btn ${r.id}`}
-                    disabled={auto}
-                    title={r.descripcion}
+                    className={`respuesta-btn ${r.id} ${sinEnergia ? 'locked' : ''}`}
+                    disabled={auto || sinEnergia}
+                    title={sinEnergia ? `Necesitas ${r.costo} de energía (tienes ${energia})` : r.descripcion}
                     onClick={() => g.send({ t: 'responder', respuesta: r.id, nodoId: sel.id })}
                   >
                     <div className="rb-top">
@@ -392,6 +400,10 @@ export function DefensePanel({ g, sel }: { g: Game; sel: SimNode | null }) {
                       <span className={`rb-tag ${meta.badgeCls}`}>{meta.badge}</span>
                     </div>
                     <span className="rb-desc">{r.descripcion}</span>
+                    <div className="tb-costs">
+                      <span className={`cost-chip ${sinEnergia ? 'cant' : ''}`}>⚡ {r.costo}</span>
+                      <span className="cost-chip pts">★ {r.puntos}</span>
+                    </div>
                     {r.comandoEjemplo && <code className="rb-cmd">{r.comandoEjemplo.replace('{target}', sel.id)}</code>}
                   </button>
                 );

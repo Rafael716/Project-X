@@ -20,6 +20,9 @@ export function Battle({ g }: { g: Game }) {
 
   return (
     <div className="battle">
+      {/* Marcador tipo videojuego: puntos, energía y combos de cada lado */}
+      <ScoreHUD st={st} />
+
       {/* Barra de Métricas y Control Superior */}
       <MetricsBar g={g} st={st} />
 
@@ -105,6 +108,60 @@ export function Battle({ g }: { g: Game }) {
   );
 }
 
+function ScoreHUD({ st }: { st: GameState }) {
+  const m = st.metricas;
+  const total = Math.max(1, m.puntosAtacante + m.puntosDefensor);
+  const atkPct = (m.puntosAtacante / total) * 100;
+
+  return (
+    <div className="score-hud">
+      <SideScore
+        side="atk"
+        titulo="🔴 Red Team"
+        puntos={m.puntosAtacante}
+        meta={m.puntosMeta}
+        energia={m.energiaAtacante}
+        energiaMax={m.energiaMax}
+        combo={m.comboAtacante}
+      />
+      <div className="score-tug">
+        <div className="tug-bar">
+          <div className="tug-atk" style={{ width: `${atkPct}%` }} />
+          <div className="tug-def" style={{ width: `${100 - atkPct}%` }} />
+        </div>
+        <span className="tug-label">Dominio de la partida</span>
+      </div>
+      <SideScore
+        side="def"
+        titulo="🔵 Blue Team"
+        puntos={m.puntosDefensor}
+        meta={m.puntosMeta}
+        energia={m.energiaDefensor}
+        energiaMax={m.energiaMax}
+        combo={m.comboDefensor}
+      />
+    </div>
+  );
+}
+
+function SideScore({ side, titulo, puntos, meta, energia, energiaMax, combo }:
+  { side: 'atk' | 'def'; titulo: string; puntos: number; meta: number; energia: number; energiaMax: number; combo: number }) {
+  return (
+    <div className={`side-score side-${side}`}>
+      <div className="ss-top">
+        <span className="ss-title">{titulo}</span>
+        {combo >= 2 && <span className="ss-combo">🔥 x{combo} combo</span>}
+      </div>
+      <div className="ss-points">{puntos}<span className="ss-meta"> / {meta}</span></div>
+      <div className="ss-energy" title={`Energía ${energia}/${energiaMax}`}>
+        {Array.from({ length: energiaMax }).map((_, i) => (
+          <span key={i} className={`epip ${i < energia ? 'on' : ''}`} />
+        ))}
+      </div>
+    </div>
+  );
+}
+
 function MetricsBar({ g, st }: { g: Game; st: GameState }) {
   const m = st.metricas;
   const pct = Math.round((st.tick / st.tickMax) * 100);
@@ -179,9 +236,16 @@ function Graph({ st, sel, onSel }: { st: GameState; sel: string | null; onSel: (
   const vis = st.nodos;
   const pos = new Map<string, { x: number; y: number }>();
 
+  // Si el escenario trae posiciones (pos en 0..1), se respeta el mapa diseñado;
+  // si no, se cae a un layout en círculo.
+  const M = 56;
   vis.forEach((n, i) => {
-    const a = (i / vis.length) * Math.PI * 2 - Math.PI / 2;
-    pos.set(n.id, { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) });
+    if (n.pos) {
+      pos.set(n.id, { x: M + n.pos[0] * (W - 2 * M), y: M + n.pos[1] * (H - 2 * M) });
+    } else {
+      const a = (i / vis.length) * Math.PI * 2 - Math.PI / 2;
+      pos.set(n.id, { x: cx + R * Math.cos(a), y: cy + R * Math.sin(a) });
+    }
   });
 
   return (
@@ -262,6 +326,7 @@ function Graph({ st, sel, onSel }: { st: GameState; sel: string | null; onSel: (
             )}
 
             <text className="nicon" y={6}>{icono(n)}</text>
+            {n.persistente && <text className="npersist" x={r - 4} y={-r + 10}>🚪</text>}
             <text className="nlabel" y={r + 16}>{n.nombre}</text>
             <text className="nsub" y={r + 28}>{n.servicios.slice(0, 2).join(',')}</text>
           </g>

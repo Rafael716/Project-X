@@ -1,131 +1,183 @@
-"""Respuestas del defensor. Port de response.ts."""
+"""Respuestas del defensor. Mismo patrón que techniques.py (Sesión 2):
+cada respuesta es una subclase de `Respuesta` que sobreescribe `aplicar()`.
 
-from techniques import fase_index, ORDEN_FASE
+aplicar(e, n) -> Resultado(texto, penalizacion, eco)
+  - texto:        lo que ve el defensor en su consola.
+  - penalizacion: cuánto baja la disponibilidad (aislar/bloquear tiene costo).
+  - eco:          lo que NOTA el atacante en su terminal (o None si no nota nada).
+"""
+
+from dataclasses import dataclass
+from typing import Optional
+
+from techniques import ORDEN_FASE, fase_index
 
 # El aislamiento es temporal: mantener un host offline no es gratis (doc 06 §6).
 DURACION_AISLAMIENTO = 24
 
-RESPUESTAS = [
-    {'id': 'aislar', 'nombre': 'Aislar nodo (Cuarentena)',
-     'descripcion': 'Corta la conectividad de red del host. Detiene ataques de inmediato pero degrada la disponibilidad si es un FP.',
-     'comandoEjemplo': 'tc qdisc add dev eth0 root netem loss 100% # o eBPF xdp drop'},
-    {'id': 'terminar_proceso', 'nombre': 'Terminar proceso (SIGKILL)',
-     'descripcion': 'Mata el proceso/reverse shell sospechoso y revierte la kill chain al estado previo.',
-     'comandoEjemplo': 'ebpf_kill -pid $(pgrep -f "sh|nc|beacon") -9'},
-    {'id': 'parchear_env', 'nombre': 'Parchear .env y rotar secretos',
-     'descripcion': 'Sanea variables .env, revoca tokens y restringe acceso a documentos confidenciales.',
-     'comandoEjemplo': 'vault-rotate --env /app/.env && chmod 600 *.env *.docx'},
-    {'id': 'honeypot', 'nombre': 'Desplegar honeypot / señuelo',
-     'descripcion': 'Sube la postura defensiva del nodo, atrae sondas enemigas y aumenta la precisión del detector.',
-     'comandoEjemplo': 'docker run -d --name decoy-srv -p 8080:80 cowrie/honeypot'},
-    {'id': 'bloquear_ip', 'nombre': 'Bloquear origen atacante',
-     'descripcion': 'Aplica reglas de firewall eBPF/iptables para descartar paquetes de la IP hostil.',
-     'comandoEjemplo': 'iptables -A INPUT -s {attacker_ip} -j DROP'},
-    {'id': 'parchear_vuln', 'nombre': 'Parchear CVEs y vulnerabilidades (Hotfix)',
-     'descripcion': 'Aplica parches de seguridad de emergencia en el software del nodo, remediando CVEs críticos.',
-     'comandoEjemplo': 'apt-get --only-upgrade install log4j openssl -y && systemctl restart app'},
-    {'id': 'yara_memory_scan', 'nombre': 'Threat Hunting & Escaneo YARA en memoria',
-     'descripcion': 'Escanea procesos y memoria RAM con reglas YARA para detectar web shells y beacons C2 sin tirar el servicio.',
-     'comandoEjemplo': 'yara -s -r /etc/yara/c2_beacons.yar /proc/*/mem'},
-    {'id': 'canary_token', 'nombre': 'Plantar HoneyToken / Trampa canaria',
-     'descripcion': 'Siembra credenciales y tokens señuelo en archivos del host para delatar sondas hostiles.',
-     'comandoEjemplo': 'canary-deploy --token aws_key --output /home/user/.aws/credentials'},
-    {'id': 'rotate_keys', 'nombre': 'Rotación de llaves SSH y tickets Kerberos',
-     'descripcion': 'Invalida claves SSH autorizadas y revoca tickets Kerberos TGT para cortar movimientos laterales.',
-     'comandoEjemplo': 'kadmin.local -q "cpw -randkey krbtgt/CORP" && shred -u ~/.ssh/authorized_keys'},
-]
 
-RESPUESTA_POR_ID = {r['id']: r for r in RESPUESTAS}
+@dataclass(frozen=True)
+class Resultado:
+    texto: str
+    penalizacion: float = 0.0
+    eco: Optional[str] = None
 
 
-def aplicar_respuesta(nodos: list, kind: str, nodo_id: str, tick: int) -> dict:
-    """Devuelve {'evento': ..., 'penalizaDisponibilidad': float}."""
-    n = next((x for x in nodos if x['id'] == nodo_id), None)
+class Respuesta:
+    id = ''
+    nombre = ''
+    descripcion = ''
+    comandoEjemplo = ''
+    costo = 2
+    puntos = 20          # si el nodo era realmente hostil
+    puntos_fp = 0        # si el nodo estaba sano (falso positivo)
 
-    def ev(texto):
-        return {'tick': tick, 'id': f'r{tick}-{nodo_id}', 'tipo': 'respuesta',
-                'lado': 'defender', 'nodoId': nodo_id, 'texto': texto}
+    def meta(self) -> dict:
+        return {k: getattr(self, k) for k in ('id', 'nombre', 'descripcion', 'comandoEjemplo', 'costo', 'puntos')}
 
-    if not n:
-        return {'evento': ev('Respuesta a nodo inexistente'), 'penalizaDisponibilidad': 0}
+    def aplicar(self, e, n) -> Resultado:  # pragma: no cover - siempre se sobreescribe
+        raise NotImplementedError
 
-    if kind == 'aislar':
-        sano = (not n['compromisoReal']) and n['estado'] != 'sondeado'
+
+def _subir_postura(n, delta):
+    n['posturaDefensiva'] = min(1.0, n['posturaDefensiva'] + delta)
+
+
+def _atenuar(n, senal, factor):
+    if n['senales'].get(senal):
+        n['senales'][senal] *= factor
+
+
+class Aislar(Respuesta):
+    id, nombre, costo, puntos, puntos_fp = 'aislar', 'Aislar nodo (cuarentena)', 4, 40, -25
+    descripcion = 'Corta la red del host por 24 ticks. Frena todo ataque, pero cuesta disponibilidad (más si era sano).'
+    comandoEjemplo = 'xdp-filter load eth0 --mode drop  # cuarentena'
+
+    def aplicar(self, e, n):
+        sano = not n['compromisoReal'] and n['estado'] != 'sondeado'
         n['estado'] = 'aislado'
-        n['aisladoHasta'] = tick + DURACION_AISLAMIENTO
+        n['aisladoHasta'] = e.tick + DURACION_AISLAMIENTO
         costo = n['valor'] * 0.05 + (n['valor'] * 0.15 if sano else 0)
-        return {'evento': ev(f"Nodo {n['nombre']} AISLADO en cuarentena eBPF por {DURACION_AISLAMIENTO} ticks"),
-                'penalizaDisponibilidad': costo}
+        return Resultado(f"{n['nombre']} AISLADO en cuarentena por {DURACION_AISLAMIENTO} ticks", costo,
+                         f"[-] CONNECTION DROPPED: {n['nombre']} inalcanzable (aislado por el defensor).")
 
-    if kind == 'terminar_proceso':
-        if n['fase'] and n['compromisoReal']:
-            i = fase_index(n['fase'])
-            n['fase'] = ORDEN_FASE[i - 1] if i > 0 else None
-            if not n['fase']:
-                n['compromisoReal'] = False
-                n['estado'] = 'limpio'
-            return {'evento': ev(f"Proceso malicioso terminado en {n['nombre']}: retrocede a {n['fase'] or 'limpio'}"),
-                    'penalizaDisponibilidad': 0}
-        return {'evento': ev(f"Terminar proceso en {n['nombre']}: sin proceso hostil activo"),
-                'penalizaDisponibilidad': 0.05}
 
-    if kind == 'parchear_env':
-        n['posturaDefensiva'] = min(1, n['posturaDefensiva'] + 0.35)
-        if n['senales'].get('s_recon'):
-            n['senales']['s_recon'] *= 0.3
-        if n['senales'].get('s_tecnica'):
-            n['senales']['s_tecnica'] *= 0.5
+class TerminarProceso(Respuesta):
+    id, nombre, costo, puntos, puntos_fp = 'terminar_proceso', 'Terminar proceso (SIGKILL)', 2, 25, -5
+    descripcion = 'Mata la shell hostil y hace retroceder una fase. No sirve si hay persistencia instalada.'
+    comandoEjemplo = 'kill -9 $(pgrep -f beacon)'
+
+    def aplicar(self, e, n):
+        if not (n['fase'] and n['compromisoReal']):
+            return Resultado(f"SIGKILL en {n['nombre']}: sin proceso hostil activo", 0.05)
+        if n.get('persistente'):
+            return Resultado(f"SIGKILL en {n['nombre']}: el proceso REAPARECE (hay persistencia; usa YARA)", 0,
+                             f"[!] Shell reiniciada por el cron de persistencia en {n['nombre']}.")
+        i = fase_index(n['fase'])
+        n['fase'] = ORDEN_FASE[i - 1] if i > 0 else None
+        if fase_index(n['fase']) < fase_index('acceso_inicial'):
+            n['compromisoReal'] = False
+            e.sincronizar_estado(n)
+        return Resultado(f"Proceso hostil terminado en {n['nombre']}: retrocede a {n['fase'] or 'limpio'}", 0,
+                         f"[-] SIGNAL KILLED: tu shell en {n['nombre']} fue terminada.")
+
+
+class ParchearEnv(Respuesta):
+    id, nombre, costo, puntos = 'parchear_env', 'Rotar secretos (.env)', 2, 15
+    descripcion = 'Sanea .env y rota credenciales: +35% postura, borra el reconocimiento del atacante.'
+    comandoEjemplo = 'vault-rotate --env /app/.env && chmod 600 *.env'
+
+    def aplicar(self, e, n):
+        _subir_postura(n, 0.35)
+        _atenuar(n, 's_recon', 0.3)
+        _atenuar(n, 's_tecnica', 0.5)
         if n['fase'] == 'recon':
             n['fase'] = None
-            n['estado'] = 'limpio'
-        return {'evento': ev(f"Secretos/.env saneados y credenciales rotadas en {n['nombre']} (postura +35%)"),
-                'penalizaDisponibilidad': 0.01}
+            e.sincronizar_estado(n)
+        return Resultado(f"Secretos rotados en {n['nombre']} (postura +35%)", 0.01,
+                         f"[-] ACCESS DENIED (403): credenciales de {n['nombre']} rotadas.")
 
-    if kind == 'honeypot':
-        n['posturaDefensiva'] = min(1, n['posturaDefensiva'] + 0.5)
-        return {'evento': ev(f"Honeypot desplegado junto a {n['nombre']} (postura defensiva +50%)"),
-                'penalizaDisponibilidad': 0}
 
-    if kind == 'bloquear_ip':
+class Honeypot(Respuesta):
+    id, nombre, costo, puntos = 'honeypot', 'Desplegar honeypot', 3, 15
+    descripcion = 'Señuelo junto al host: +50% postura defensiva (los ataques fallan más).'
+    comandoEjemplo = 'docker run -d -p 8080:80 cowrie/cowrie'
+
+    def aplicar(self, e, n):
+        _subir_postura(n, 0.5)
+        return Resultado(f"Honeypot desplegado junto a {n['nombre']} (postura +50%)")
+
+
+class BloquearIp(Respuesta):
+    id, nombre, costo, puntos = 'bloquear_ip', 'Bloquear origen', 1, 10
+    descripcion = 'Firewall contra la IP hostil: borra la señal de reputación, +20% postura.'
+    comandoEjemplo = 'iptables -A INPUT -s 10.66.6.6 -j DROP'
+
+    def aplicar(self, e, n):
         n['senales']['s_reputacion'] = 0
-        n['posturaDefensiva'] = min(1, n['posturaDefensiva'] + 0.2)
-        return {'evento': ev(f"Origen hostil bloqueado en firewall para {n['nombre']}"),
-                'penalizaDisponibilidad': 0.03}
+        _subir_postura(n, 0.2)
+        return Resultado(f"Origen hostil bloqueado para {n['nombre']}", 0.03)
 
-    if kind == 'parchear_vuln':
-        for v in n.get('vulnerabilidades', []):
-            v['dificultad'] = min(0.95, v.get('dificultad', 0.5) + 0.4)
-        n['posturaDefensiva'] = min(1, n['posturaDefensiva'] + 0.35)
-        if n['senales'].get('s_tecnica'):
-            n['senales']['s_tecnica'] *= 0.3
-        return {'evento': ev(f"Parches de seguridad aplicados en {n['nombre']}: CVEs mitigados (postura +35%)"),
-                'penalizaDisponibilidad': 0.02}
 
-    if kind == 'yara_memory_scan':
-        if n['fase'] == 'escalada' and n['compromisoReal']:
-            n['fase'] = 'acceso_inicial'
-            if n['senales'].get('s_tecnica'):
-                n['senales']['s_tecnica'] *= 0.2
+class ParchearVuln(Respuesta):
+    id, nombre, costo, puntos = 'parchear_vuln', 'Parchear CVEs (hotfix)', 3, 15
+    descripcion = 'Sube la dificultad de todas las vulnerabilidades del host y +35% postura.'
+    comandoEjemplo = 'apt-get --only-upgrade install openssl -y'
+
+    def aplicar(self, e, n):
+        for v in n['vulnerabilidades']:
+            v['dificultad'] = min(0.95, v['dificultad'] + 0.4)
+        _subir_postura(n, 0.35)
+        _atenuar(n, 's_tecnica', 0.3)
+        return Resultado(f"CVEs parchados en {n['nombre']} (postura +35%)", 0.02,
+                         f"[-] EXPLOIT MITIGATED: el servicio de {n['nombre']} fue parchado.")
+
+
+class YaraScan(Respuesta):
+    id, nombre, costo, puntos = 'yara_memory_scan', 'Escaneo YARA en memoria', 2, 30
+    descripcion = 'Caza beacons y persistencia en RAM sin apagar el servicio: quita la persistencia y baja de escalada.'
+    comandoEjemplo = 'yara -s -r c2_beacons.yar /proc/*/mem'
+
+    def aplicar(self, e, n):
+        if n['compromisoReal'] and (n.get('persistente') or n['fase'] == 'escalada'):
+            n['persistente'] = False
+            if fase_index(n['fase']) >= fase_index('escalada'):
+                n['fase'] = 'acceso_inicial'
+            _atenuar(n, 's_tecnica', 0.2)
             n['score'] *= 0.5
-            return {'evento': ev(f"YARA Memory Hunt en {n['nombre']}: [MATCH] Beacon/Webshell neutralizado. Permisos revertidos."),
-                    'penalizaDisponibilidad': 0}
+            return Resultado(f"YARA en {n['nombre']}: [MATCH] beacon/persistencia neutralizados", 0,
+                             f"[-] BEACON DESTROYED: tu implante en {n['nombre']} fue purgado.")
         n['score'] *= 0.7
-        return {'evento': ev(f"YARA Memory Hunt en {n['nombre']}: Telemetría limpia, 0 anomalías residentes."),
-                'penalizaDisponibilidad': 0}
+        return Resultado(f"YARA en {n['nombre']}: memoria limpia")
 
-    if kind == 'canary_token':
-        n['posturaDefensiva'] = min(1, n['posturaDefensiva'] + 0.4)
+
+class CanaryToken(Respuesta):
+    id, nombre, costo, puntos = 'canary_token', 'Plantar HoneyToken', 2, 15
+    descripcion = 'Credenciales señuelo en el host: +40% postura y el detector queda más sensible ahí.'
+    comandoEjemplo = 'canary-deploy --token aws_key --output ~/.aws/credentials'
+
+    def aplicar(self, e, n):
+        _subir_postura(n, 0.4)
         n['senales']['s_canary'] = 0.8
-        return {'evento': ev(f"HoneyToken señuelo desplegado en {n['nombre']} (postura +40%)"),
-                'penalizaDisponibilidad': 0}
+        return Resultado(f"HoneyToken sembrado en {n['nombre']} (postura +40%)", 0,
+                         f"[!] DECOY SUSPECTED: credenciales sospechosas en {n['nombre']}.")
 
-    if kind == 'rotate_keys':
+
+class RotarLlaves(Respuesta):
+    id, nombre, costo, puntos = 'rotate_keys', 'Rotar llaves SSH / Kerberos', 2, 20
+    descripcion = 'Revoca llaves y tickets: corta movimientos laterales, +25% postura.'
+    comandoEjemplo = 'kadmin.local -q "cpw -randkey krbtgt/CORP"'
+
+    def aplicar(self, e, n):
         n['senales']['s_reputacion'] = 0
-        if n['senales'].get('s_recon'):
-            n['senales']['s_recon'] *= 0.3
-        n['posturaDefensiva'] = min(1, n['posturaDefensiva'] + 0.25)
-        return {'evento': ev(f"Llaves SSH y tickets Kerberos revocados en {n['nombre']} (postura +25%)"),
-                'penalizaDisponibilidad': 0.01}
+        _atenuar(n, 's_recon', 0.3)
+        _subir_postura(n, 0.25)
+        return Resultado(f"Llaves y tickets revocados en {n['nombre']} (postura +25%)", 0.01,
+                         f"[-] AUTH REJECTED: llaves de {n['nombre']} revocadas.")
 
-    return {'evento': ev('Respuesta desconocida'), 'penalizaDisponibilidad': 0}
 
+RESPUESTA_POR_ID = {r.id: r for r in (
+    Aislar(), TerminarProceso(), YaraScan(), ParchearEnv(), ParchearVuln(),
+    RotarLlaves(), CanaryToken(), Honeypot(), BloquearIp(),
+)}
+RESPUESTAS = [r.meta() for r in RESPUESTA_POR_ID.values()]

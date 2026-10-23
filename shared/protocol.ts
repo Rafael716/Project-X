@@ -49,10 +49,12 @@ export interface SimNode {
   estado: NodeState;
   fase: Phase | null;         // fase de kill chain alcanzada por el atacante en este nodo
   compromisoReal: boolean;    // ¿el atacante realmente lo comprometió? (para penalizar FP)
+  persistente?: boolean;      // ¿tiene persistencia instalada? (resiste SIGKILL)
   posturaDefensiva: number;   // 0..1, sube con honeypot/vigilancia
   score: number;              // score de anomalía del detector 0..1
   senales: Record<string, number>; // desglose explicable del score
   aisladoHasta?: number;      // tick en que el aislamiento expira (el host vuelve online)
+  pos?: [number, number];     // posición x,y en 0..1 para dibujar el mapa
 }
 
 export interface Edge {
@@ -97,6 +99,15 @@ export interface Metrics {
   metaExfiltracion: number;
   alertasTotales: number;
   alertasFalsas: number;
+  // Capa de juego
+  puntosAtacante: number;
+  puntosDefensor: number;
+  puntosMeta: number;
+  energiaAtacante: number;
+  energiaDefensor: number;
+  energiaMax: number;
+  comboAtacante: number;
+  comboDefensor: number;
 }
 
 export interface PlayerSlot {
@@ -134,8 +145,10 @@ export interface TechniqueMeta {
   faseRequiere: Phase | null;
   ruido: 'bajo' | 'medio' | 'alto';
   facilidadBase: number; // 0..1
+  costo: number;         // energía que consume
   descripcion: string;
   comandoEjemplo?: string;
+  puntos: number;        // puntaje por éxito
 }
 
 export type ResponseKind =
@@ -153,6 +166,8 @@ export interface ResponseMeta {
   nombre: string;
   descripcion: string;
   comandoEjemplo?: string;
+  costo: number;         // energía que consume
+  puntos: number;        // puntaje si el objetivo era realmente hostil
 }
 
 // ============ Mensajes Cliente -> Servidor ============

@@ -8,11 +8,17 @@ export function Lobby({ g }: { g: Game }) {
   return <Entrada g={g} />;
 }
 
+const NIVELES = [
+  { id: 'pymes01', nombre: 'PYMES-01', desc: 'Red pequeña · 5 hosts · Normal', dif: 'Normal' },
+  { id: 'datacenter02', nombre: 'DATACENTER-02', desc: 'Datacenter endurecido · 6 hosts · Difícil', dif: 'Difícil' },
+];
+
 function Entrada({ g }: { g: Game }) {
   const [tab, setTab] = useState<'crear' | 'unir'>('crear');
   const [nombre, setNombre] = useState('');
   const [role, setRole] = useState<Role>('attacker');
   const [codigo, setCodigo] = useState('');
+  const [escenarioId, setEscenarioId] = useState('pymes01');
 
   return (
     <div className="centro">
@@ -36,6 +42,18 @@ function Entrada({ g }: { g: Game }) {
           <RoleBtn r="spectator" cur={role} set={setRole} label="👁 Espectador" desc="Solo mirar" />
         </fieldset>
 
+        {tab === 'crear' && (
+          <fieldset className="roles niveles">
+            <legend>Elige el nivel</legend>
+            {NIVELES.map(n => (
+              <button type="button" key={n.id} className={`rolecard ${escenarioId === n.id ? 'on' : ''}`} onClick={() => setEscenarioId(n.id)}>
+                <span className="rl">{n.nombre} <span className={`dif-tag dif-${n.dif.toLowerCase()}`}>{n.dif}</span></span>
+                <span className="rd">{n.desc}</span>
+              </button>
+            ))}
+          </fieldset>
+        )}
+
         {tab === 'unir' && (
           <label>Código de la sala
             <input value={codigo} onChange={e => setCodigo(e.target.value.toUpperCase())} placeholder="ABC123" maxLength={6} className="cod" />
@@ -44,7 +62,7 @@ function Entrada({ g }: { g: Game }) {
 
         <button className="primary big" disabled={!g.conectado || !nombre || (tab === 'unir' && codigo.length !== 6)}
           onClick={() => tab === 'crear'
-            ? g.send({ t: 'crear', nombre, role, escenarioId: 'pymes01' })
+            ? g.send({ t: 'crear', nombre, role, escenarioId })
             : g.send({ t: 'unir', codigo, nombre, role })}>
           {tab === 'crear' ? 'Crear y entrar' : 'Entrar a la sala'}
         </button>

@@ -1,193 +1,182 @@
 """Agentes ReAct heurísticos (observar -> razonar -> actuar). ADR-0006.
-Port de agents.ts. Política determinista; hook LLM posible reemplazando decidir()."""
 
-from techniques import TECNICAS, fase_index
+Política determinista y sembrada. Cada agente implementa `decidir(e) -> (intent, pensamiento)`.
+En match.py se envuelven con `PoliticaResiliente` (Sesión 7): si la política
+primaria fallara o tardara, el proxy degrada a una política mínima sin congelar
+el tick — el "Proxy de Resiliencia" de la diapositiva de la PC2.
+"""
+
+from techniques import TECNICA_POR_ID, fase_index
 
 _RUIDO_PEN = {'bajo': 0, 'medio': 0.3, 'alto': 0.6}
 
 
+def _asequible(e, lado, costo):
+    return e.energia[lado] >= costo
+
+
 def atacante_decidir(e):
     ruta = e.ruta_a_objetivo()
+    base = {'tick': e.tick, 'lado': 'attacker'}
     opciones = []
     for n in e.nodos:
-        for t in TECNICAS:
-            intent = {'tecnicaId': t['id'], 'nodoId': n['id']}
+        for t in TECNICA_POR_ID.values():
+            intent = {'tecnicaId': t.id, 'nodoId': n['id']}
             if e.validar_ataque(intent):
                 continue
-            pexito = e.prob_exito(t['id'], n)
-            p = (fase_index(t['faseProduce']) + 1) + 2 * pexito
+            pexito = e.prob_exito(t.id, n)
+            p = (fase_index(t.faseProduce) + 1) + 2 * pexito
             razon = f"Avanzar fase con éxito {round(pexito * 100)}%"
 
-            if t['id'] == 'exfil':
+            if t.id == 'exfil':
                 p += 14
-                razon = f"Objetivo cumbre: exfiltrar base de datos y archivos críticos de {n['nombre']}"
-            elif t['id'] == 'sqli_dump':
-                has_sqli_loot = any(l['nodoId'] == n['id'] and 'sqli_dump' in l['item'] for l in e.loot)
-                p += 8.5 if not has_sqli_loot else -2
-                razon = f"Inyección SQL en {n['nombre']} para sustraer tablas confidenciales y credenciales"
-            elif t['id'] == 'dump_lsass':
-                has_lsass_loot = any(l['nodoId'] == n['id'] and 'lsass_hashes' in l['item'] for l in e.loot)
-                p += 8.0 if not has_lsass_loot else -3
-                razon = f"Volcado de memoria LSASS con Mimikatz en {n['nombre']} para extraer hashes NTLM de dominio"
-            elif t['id'] == 'persist_backdoor':
-                p += 6.0 if not n.get('persistente') else -4
-                razon = f"Instalar persistencia (WebShell + Cron) en {n['nombre']} para blindar el acceso C2"
-            elif t['id'] == 'phishing_spray':
+                razon = f"Objetivo cumbre: exfiltrar datos críticos de {n['nombre']}"
+            elif t.id == 'sqli_dump':
+                repetido = any(l['nodoId'] == n['id'] and 'sqli_dump' in l['item'] for l in e.loot)
+                p += -2 if repetido else 8.5
+                razon = f"Inyección SQL en {n['nombre']} para sustraer tablas y credenciales"
+            elif t.id == 'dump_lsass':
+                repetido = any(l['nodoId'] == n['id'] and 'lsass_hashes' in l['item'] for l in e.loot)
+                p += -3 if repetido else 8.0
+                razon = f"Volcar LSASS en {n['nombre']} para robar hashes NTLM"
+            elif t.id == 'persist_backdoor':
+                p += 6.0
+                razon = f"Instalar persistencia en {n['nombre']} para blindar el acceso"
+            elif t.id == 'phishing_spray':
                 p += 5.5
-                razon = f"Rociado de credenciales / Pass-the-Hash contra servicios expuestos de {n['nombre']}"
-            elif t['id'] == 'scan_docs':
-                pendientes = [s for s in (n.get('archivosSensibles') or [])
-                              if not any(l['nodoId'] == n['id'] and l['item'] == s for l in e.loot)]
-                if pendientes:
-                    p += 7.0
-                    razon = f"Descubrir y volcar {len(pendientes)} archivos (.env / credenciales / docs) en {n['nombre']}"
-                else:
-                    p -= 4
-            elif t['id'] == 'pivot':
+                razon = f"Pass-the-Hash contra servicios de {n['nombre']}"
+            elif t.id == 'scan_docs':
+                pend = [s for s in (n.get('archivosSensibles') or [])
+                        if not any(l['nodoId'] == n['id'] and l['item'] == s for l in e.loot)]
+                p += 7.0 if pend else -4
+                if pend:
+                    razon = f"Volcar {len(pend)} archivos (.env/creds/docs) en {n['nombre']}"
+            elif t.id == 'pivot':
                 p += 5.5
-                razon = f"Pivote lateral e infiltración hacia nodo adyacente {n['nombre']}"
-            elif t['id'] == 'privesc':
+                razon = f"Pivote lateral hacia {n['nombre']}"
+            elif t.id == 'privesc':
                 p += 5.0
-                razon = f"Escalar privilegios a ROOT/SYSTEM en {n['nombre']}"
+                razon = f"Escalar a ROOT/SYSTEM en {n['nombre']}"
 
             idx = ruta.index(n['id']) if n['id'] in ruta else -1
-            if idx >= 0:
-                p += 6 + idx
-            else:
-                p -= 5
-            p -= _RUIDO_PEN[t['ruido']]
-            opciones.append({'intent': intent, 'prioridad': p, 'nombre': f"{t['nombre']} → {n['nombre']}", 'razon': razon})
+            p += (6 + idx) if idx >= 0 else -5
+            p -= _RUIDO_PEN[t.ruido]
+            if not _asequible(e, 'attacker', t.costo):
+                p -= 100   # no puede pagarla ahora: al fondo de la lista
+            opciones.append({'intent': intent, 'prioridad': p, 'nombre': f"{t.nombre} → {n['nombre']}", 'razon': razon, 'costo': t.costo})
 
+    opciones = [o for o in opciones if _asequible(e, 'attacker', o['costo'])]
     opciones.sort(key=lambda o: o['prioridad'], reverse=True)
-    base = {'tick': e.tick, 'lado': 'attacker'}
 
     if not opciones:
-        th = {**base, 'observacion': 'Sin jugadas viables inmediatas (red contenida o aislada).',
-              'razonamiento': 'Reevaluando topología y aguardando que expire algún aislamiento.', 'accion': 'reconectar_c2'}
+        th = {**base, 'observacion': f"Sin jugadas asequibles (energía {e.energia['attacker']}/{e.ENERGIA_MAX}).",
+              'razonamiento': 'Recargando energía y reevaluando la topología.', 'accion': 'recargar_c2'}
         e.pensar(th)
         return None, th
 
     elegido = opciones[0]
     th = {**base,
-          'observacion': f"{len(opciones)} vectores viables identificados; objetivo: {e.nodo_nombre(e.objetivo)}. Archivos capturados: {len(e.loot)}.",
-          'razonamiento': f"{elegido['razon']}. Prioridad: {elegido['prioridad']:.1f} (bajo ruido / alto impacto).",
+          'observacion': f"{len(opciones)} vectores asequibles; objetivo {e.nodo_nombre(e.objetivo)}. Botín: {len(e.loot)}. Energía {e.energia['attacker']}/{e.ENERGIA_MAX}.",
+          'razonamiento': f"{elegido['razon']}. Prioridad {elegido['prioridad']:.1f} (bajo ruido / alto impacto).",
           'accion': elegido['nombre']}
     e.pensar(th)
     return elegido['intent'], th
 
 
+def _puede_def(e, respuesta, costo):
+    return _asequible(e, 'defender', costo)
+
+
 def defensor_decidir(e):
+    from response import RESPUESTA_POR_ID
     base = {'tick': e.tick, 'lado': 'defender'}
     activos = [n for n in e.nodos if n['estado'] != 'aislado']
 
-    # 1. Compromiso crítico o exfiltración inminente
-    critico = next((n for n in activos if n['compromisoReal'] and (n['fase'] == 'escalada' or n['fase'] == 'exfiltracion' or n['score'] > 0.88)), None)
-    if critico:
+    def resp_costo(rid):
+        r = RESPUESTA_POR_ID.get(rid)
+        return r.costo if r else 99
+
+    def emitir(rid, nodo, obs, razon):
+        th = {**base, 'observacion': obs, 'razonamiento': razon, 'accion': f"{rid} → {nodo['nombre']}"}
+        e.pensar(th)
+        return {'respuesta': rid, 'nodoId': nodo['id']}, th
+
+    # 1. Compromiso crítico / exfiltración inminente
+    critico = next((n for n in activos if n['compromisoReal'] and (n['fase'] in ('escalada', 'exfiltracion') or n['score'] > 0.88)), None)
+    if critico and _puede_def(e, 'aislar', resp_costo('aislar')):
         if critico['score'] > 0.92 or critico['fase'] == 'exfiltracion':
-            resp = {'respuesta': 'aislar', 'nodoId': critico['id']}
-            motivo = 'Riesgo inminente de robo de base de datos → Cuarentena eBPF inmediata para aislar el host.'
-        elif critico.get('persistente') or critico['fase'] == 'escalada':
-            resp = {'respuesta': 'yara_memory_scan', 'nodoId': critico['id']}
-            motivo = 'Proceso o backdoor con privilegios detectado → Ejecutando escaneo YARA en memoria para purgar beacons sin disrupción.'
-        else:
-            resp = {'respuesta': 'terminar_proceso', 'nodoId': critico['id']}
-            motivo = 'Proceso malicioso activo detectado → Ejecutando SIGKILL para expulsar al atacante.'
-        th = {**base,
-              'observacion': f"AMENAZA CRÍTICA en {critico['nombre']} (score {round(critico['score']*100)}%, fase: {critico['fase'] or 'activa'}).",
-              'razonamiento': motivo,
-              'accion': f"{resp['respuesta']} → {critico['nombre']}"}
-        e.pensar(th)
-        return resp, th
+            return emitir('aislar', critico, f"AMENAZA CRÍTICA en {critico['nombre']} (score {round(critico['score']*100)}%).",
+                          'Robo inminente → cuarentena eBPF inmediata.')
+        if critico.get('persistente') or critico['fase'] == 'escalada':
+            if _puede_def(e, 'yara_memory_scan', resp_costo('yara_memory_scan')):
+                return emitir('yara_memory_scan', critico, f"Persistencia/escalada en {critico['nombre']}.",
+                              'Backdoor con privilegios → escaneo YARA en memoria para purgar beacons.')
+        if _puede_def(e, 'terminar_proceso', resp_costo('terminar_proceso')):
+            return emitir('terminar_proceso', critico, f"Proceso hostil en {critico['nombre']}.",
+                          'Proceso malicioso activo → SIGKILL para expulsar al atacante.')
 
-    # 2. Robo de .env o rociado de credenciales / reconocimiento anómalo
-    sospechoso = next((n for n in activos if (n['senales'].get('s_recon', 0) > 0.35 or n['senales'].get('s_tecnica', 0) > 0.4 or n['fase'] == 'recon')), None)
-    if sospechoso and sospechoso['score'] > 0.45:
-        if sospechoso['senales'].get('s_reputacion', 0) > 0.3:
-            resp = {'respuesta': 'rotate_keys', 'nodoId': sospechoso['id']}
-            motivo = 'Sondeo o pass-the-hash sospechoso → Revocando claves SSH y tickets Kerberos expuestos.'
-        else:
-            resp = {'respuesta': 'parchear_env', 'nodoId': sospechoso['id']}
-            motivo = 'Sondeo o filtración de .env detectado → Rotando credenciales expuestas y securizando variables .env con zero downtime.'
-        th = {**base,
-              'observacion': f"Sondeo o filtración detectada en {sospechoso['nombre']} (s_recon: {sospechoso['senales'].get('s_recon', 0):.2f}).",
-              'razonamiento': motivo,
-              'accion': f"{resp['respuesta']} → {sospechoso['nombre']}"}
-        e.pensar(th)
-        return resp, th
+    # 2. Reconocimiento / fuga de .env
+    sosp = next((n for n in activos if (n['senales'].get('s_recon', 0) > 0.35 or n['senales'].get('s_tecnica', 0) > 0.4 or n['fase'] == 'recon')), None)
+    if sosp and sosp['score'] > 0.45:
+        if sosp['senales'].get('s_reputacion', 0) > 0.3 and _puede_def(e, 'rotate_keys', resp_costo('rotate_keys')):
+            return emitir('rotate_keys', sosp, f"Pass-the-hash sospechoso en {sosp['nombre']}.",
+                          'Revocando llaves SSH y tickets Kerberos.')
+        if _puede_def(e, 'parchear_env', resp_costo('parchear_env')):
+            return emitir('parchear_env', sosp, f"Sondeo/fuga de .env en {sosp['nombre']}.",
+                          'Rotando credenciales y securizando .env con zero downtime.')
 
-    # 3. Proactividad: Parcheo de vulnerabilidades o despliegue de HoneyTokens
-    vulnerable = next((n for n in activos if n['posturaDefensiva'] < 0.4 and any(v['dificultad'] < 0.65 for v in n.get('vulnerabilidades', []))), None)
-    if vulnerable and e.tick % 4 == 0:
-        resp = {'respuesta': 'parchear_vuln', 'nodoId': vulnerable['id']}
-        th = {**base,
-              'observacion': f"Vulnerabilidades conocidas sin parchear en {vulnerable['nombre']} (resistencia baja).",
-              'razonamiento': 'Aplicando hotfix preventivo de seguridad para inmunizar el host frente a exploits RCE remotos.',
-              'accion': f"parchear_vuln → {vulnerable['nombre']}"}
-        e.pensar(th)
-        return resp, th
+    # 3. Parcheo preventivo
+    vuln = next((n for n in activos if n['posturaDefensiva'] < 0.4 and any(v['dificultad'] < 0.65 for v in n['vulnerabilidades'])), None)
+    if vuln and e.tick % 4 == 0 and _puede_def(e, 'parchear_vuln', resp_costo('parchear_vuln')):
+        return emitir('parchear_vuln', vuln, f"CVEs sin parchear en {vuln['nombre']}.",
+                      'Hotfix preventivo para inmunizar frente a RCE.')
 
-    # 4. Score por encima de umbral moderado
-    peor = sorted(activos, key=lambda n: n['score'], reverse=True)[0] if activos else None
+    # 4. Anomalía moderada
+    peor = max(activos, key=lambda n: n['score']) if activos else None
     if peor and peor['score'] >= 0.55:
-        if peor['fase'] and peor['compromisoReal']:
-            resp = {'respuesta': 'terminar_proceso', 'nodoId': peor['id']}
-            por = 'Proceso malicioso detectado en host comprometido → forzando terminación de sesión.'
-        elif peor['posturaDefensiva'] < 0.35:
-            resp = {'respuesta': 'canary_token', 'nodoId': peor['id']}
-            por = 'Anomalía moderada → sembrando HoneyTokens de alta fidelidad para tender una trampa canaria.'
-        elif peor['posturaDefensiva'] < 0.6:
-            resp = {'respuesta': 'honeypot', 'nodoId': peor['id']}
-            por = 'Anomalía moderada → desplegando contenedor honeypot señuelo para desviar sondas.'
-        else:
-            resp = {'respuesta': 'bloquear_ip', 'nodoId': peor['id']}
-            por = 'Filtro de reputación perimetral → bloqueando IP atacante en firewall XDP.'
-        th = {**base,
-              'observacion': f"{peor['nombre']} con anomalía {round(peor['score']*100)}% (señales: {', '.join(peor['senales'].keys())}).",
-              'razonamiento': por, 'accion': f"{resp['respuesta']} → {peor['nombre']}"}
-        e.pensar(th)
-        return resp, th
+        if peor['fase'] and peor['compromisoReal'] and _puede_def(e, 'terminar_proceso', resp_costo('terminar_proceso')):
+            return emitir('terminar_proceso', peor, f"{peor['nombre']} comprometido ({round(peor['score']*100)}%).",
+                          'Forzando terminación de sesión hostil.')
+        if peor['posturaDefensiva'] < 0.35 and _puede_def(e, 'canary_token', resp_costo('canary_token')):
+            return emitir('canary_token', peor, f"Anomalía {round(peor['score']*100)}% en {peor['nombre']}.",
+                          'Sembrando HoneyTokens de alta fidelidad.')
+        if _puede_def(e, 'honeypot', resp_costo('honeypot')):
+            return emitir('honeypot', peor, f"Anomalía {round(peor['score']*100)}% en {peor['nombre']}.",
+                          'Desplegando honeypot señuelo.')
+        if _puede_def(e, 'bloquear_ip', resp_costo('bloquear_ip')):
+            return emitir('bloquear_ip', peor, f"Origen hostil hacia {peor['nombre']}.",
+                          'Bloqueando IP en firewall XDP.')
 
     max_score = peor['score'] if peor else 0
-    th = {**base,
-          'observacion': f"Topología estable. Score máximo en red: {round(max_score*100)}%. Telemetría eBPF normal.",
-          'razonamiento': 'Anomalías bajo umbral de intervención. No se aplican contramedidas para preservar el 100% de disponibilidad.',
-          'accion': 'vigilar_red'}
+    th = {**base, 'observacion': f"Topología estable. Score máx {round(max_score*100)}%. Energía {e.energia['defender']}/{e.ENERGIA_MAX}.",
+          'razonamiento': 'Anomalías bajo umbral. Preservo disponibilidad y acumulo energía.', 'accion': 'vigilar_red'}
     e.pensar(th)
     return None, th
 
 
-class Decision(tuple):
-    def __new__(cls, intent, thought):
-        return super().__new__(cls, (intent, thought))
+class _Politica:
+    def __init__(self, fn):
+        self._fn = fn
 
-    @property
-    def intent(self):
-        return self[0]
-
-    @property
-    def thought(self):
-        return self[1]
-
-    def __getitem__(self, item):
-        if item == 'intent':
-            return self[0]
-        if item == 'thought':
-            return self[1]
-        return super().__getitem__(item)
-
-
-class _AtacanteHeuristico:
     def decidir(self, e):
-        intent, thought = atacante_decidir(e)
-        return Decision(intent, thought)
+        return self._fn(e)
 
 
-class _DefensorHeuristico:
+class _Minima:
+    """Política de respaldo del proxy de resiliencia: 1 jugada barata y segura."""
+
+    def __init__(self, lado):
+        self.lado = lado
+
     def decidir(self, e):
-        intent, thought = defensor_decidir(e)
-        return Decision(intent, thought)
+        th = {'tick': e.tick, 'lado': self.lado,
+              'observacion': 'Política de respaldo activa.',
+              'razonamiento': 'Jugada conservadora mientras el agente principal se recupera.',
+              'accion': 'hold'}
+        return None, th
 
 
-atacante_heuristico = _AtacanteHeuristico()
-defensor_heuristico = _DefensorHeuristico()
-
+atacante_heuristico = _Politica(atacante_decidir)
+defensor_heuristico = _Politica(defensor_decidir)
+atacante_minimo = _Minima('attacker')
+defensor_minimo = _Minima('defender')

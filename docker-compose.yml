@@ -1,0 +1,14 @@
+# Project X — levanta el simulador en un contenedor.
+#   docker compose up --build
+# La web y el WebSocket quedan en http://localhost:8787
+services:
+  projectx:
+    build: .
+    ports:
+      - "8787:8787"
+    env_file:
+      - path: .env      # opcional; si no existe, config.py usa sus defaults
+        required: false
+    environment:
+      PORT: "8787"
+    restart: unless-stopped

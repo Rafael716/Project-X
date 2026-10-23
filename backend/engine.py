@@ -1,12 +1,25 @@
-"""Motor de simulación autoritativo. Port de engine.ts.
+"""Motor de simulación autoritativo.
 
-Estado como dicts (coincide 1:1 con shared/protocol.ts para que el frontend
-TypeScript lo consuma sin cambios)."""
+Estado como dicts (coincide 1:1 con el contrato que consume el frontend).
 
-from rng import Rng
-from techniques import TECNICA_POR_ID, fase_index, ORDEN_FASE
+Decisiones de construcción aplicadas de las sesiones del curso:
+- Sesión 2 (polimorfismo / enlace dinámico): el motor no sabe qué técnica ni qué
+  respuesta ejecuta; llama `tecnica.efecto(e, n)` / `resp.aplicar(e, n)` y el
+  runtime despacha a la subclase correcta. Añadir una técnica no toca el motor.
+- Sesión 3 (DbC): cada tick termina verificando `invariantes_del_motor(self)`.
+  Las ayudas que mutan estado declaran sus pre/postcondiciones.
+- Sesión 3 (CQS): los métodos que empiezan por consultar (validar/alcanzable/
+  prob_exito) son puros; los que mutan (avanzar/_resolver_*) no devuelven datos
+  que se usen como consulta.
+- Capa "de juego": energía por lado (presupuesto de acciones), puntaje y combos.
+"""
+
+import config
+from contratos import asegura, invariantes_del_motor, requiere
 from detector import Detector
-from response import aplicar_respuesta, RESPUESTA_POR_ID
+from response import RESPUESTA_POR_ID
+from rng import Rng
+from techniques import TECNICA_POR_ID, fase_index
 
 VENTANA = 60  # eventos/alertas recientes conservados para la UI
 
@@ -16,12 +29,18 @@ def clamp(x, lo, hi):
 
 
 class Engine:
+    # perillas de balance externalizadas (config.py / variables de entorno, U3)
+    ENERGIA_MAX = config.ENERGIA_MAX
+    ENERGIA_REGEN = config.ENERGIA_REGEN    # energía que cada lado recupera por tick
+    PUNTOS_META = config.PUNTOS_META        # puntaje que corona una victoria "por dominio"
+
     def __init__(self, esc: dict, seed: int):
         self.esc = esc
         self.rng = Rng(seed)
         self.nodos = esc['nodos']  # ya es copia profunda (cargar_escenario)
         for n in self.nodos:
             n['senales'] = {}
+            n.setdefault('persistente', False)
         self.aristas = [dict(a) for a in esc['aristas']]
         self.eventos = []
         self.alertas = []
@@ -30,25 +49,29 @@ class Engine:
         self.terminalLogs = []
         self.tick = 0
         self.tickMax = esc['tickMax']
-        self.detector = Detector()
+        self.detector = Detector(umbral=config.DETECTOR_UMBRAL)
         self._firstMaliciousTick = None
         self._firstTrueAlertTick = None
         self._containmentTick = None
-        self._penalDisponibilidad = 0
-        self._datosExfiltrados = 0
-        self._exfiltrados = set()
-        self._metaExfiltracion = esc['metaExfiltracion']
-        self._sumValor = sum(n['valor'] for n in self.nodos)
+        self._penalDisponibilidad = 0.0
+        self.datos_exfiltrados = 0
+        self.exfiltrados = set()
+        self.meta_exfiltracion = esc['metaExfiltracion']
+        self.suma_valor = sum(n['valor'] for n in self.nodos)
         self.objetivo = esc['objetivo']
         self._ruta = None
+        # capa de juego
+        self.energia = {'attacker': self.ENERGIA_MAX, 'defender': self.ENERGIA_MAX}
+        self.puntos = {'attacker': 0, 'defender': 0}
+        self.combo = {'attacker': 0, 'defender': 0}
 
         self._log(tipo='sistema', texto=f"Escenario {esc['nombre']} cargado. Objetivo del atacante: exfiltrar {self.nodo_nombre(esc['objetivo'])}.")
         self.log_terminal('attacker', 'projectx-c2 --init --stealth-profile',
-                          f"[+] C2 Console activada. Target network: {esc['nombre']} | Punto de entrada: {esc['entrada']} | Objetivo crítico: {self.nodo_nombre(esc['objetivo'])}", 'cmd')
+                          f"[+] C2 Console activada. Red: {esc['nombre']} | Entrada: {esc['entrada']} | Objetivo: {self.nodo_nombre(esc['objetivo'])}", 'cmd')
         self.log_terminal('defender', 'systemctl status ebpf-soc-daemon',
-                          "[+] SOC SecOps activo. Monitores eBPF/XDP desplegados. Analizador de grafos TGNN en escucha.", 'cmd')
+                          "[+] SOC SecOps activo. Monitores eBPF/XDP desplegados. Analizador TGNN en escucha.", 'cmd')
 
-    # --------- consultas ----------
+    # --------- consultas (CQS: puras) ----------
     def nodo(self, nid):
         return next((n for n in self.nodos if n['id'] == nid), None)
 
@@ -98,17 +121,15 @@ class Engine:
                     visto.add(v)
                     prev[v] = u
                     q.append(v)
-        ruta = []
-        c = self.objetivo
+        ruta, c = [], self.objetivo
         while c is not None:
             ruta.insert(0, c)
             c = prev.get(c)
         self._ruta = ruta if ruta and ruta[0] == self.esc['entrada'] else [self.esc['entrada'], self.objetivo]
         return self._ruta
 
-    # --------- validación ----------
     def validar_ataque(self, i: dict):
-        """None si válida, o string con el motivo de rechazo."""
+        """None si la jugada es válida, o string con el motivo de rechazo (CQS: pura)."""
         n = self.nodo(i['nodoId'])
         if not n:
             return 'Nodo inexistente'
@@ -117,46 +138,16 @@ class Engine:
         t = TECNICA_POR_ID.get(i['tecnicaId'])
         if not t:
             return 'Técnica desconocida'
-        fx = fase_index(n['fase'])
-        if t['id'] in ('scan_docs', 'sqli_dump', 'phishing_spray'):
-            if not self.alcanzable(i['nodoId']):
-                return 'Nodo no alcanzable (necesitas un foothold adyacente)'
-            return None
-        if t['id'] == 'dump_lsass':
-            if fx < fase_index('escalada'):
-                return 'Requiere privilegios elevados (escalada/root) para volcar memoria de procesos'
-            return None
-        if t['id'] == 'persist_backdoor':
-            if fx < fase_index('acceso_inicial'):
-                return 'Requiere acceso inicial previo en el nodo'
-            return None
-        if t['id'] == 'pivot':
-            if fx >= fase_index('acceso_inicial'):
-                return 'El nodo ya está comprometido'
-            if not self.tiene_salto_lateral(n['id']):
-                return 'Necesitas un nodo adyacente con privilegios (escalada)'
-            return None
-        if t['id'] == 'exfil':
-            if fx < fase_index('acceso_inicial'):
-                return 'Debes comprometer el nodo antes de exfiltrar'
-            if n['valor'] <= 0:
-                return 'Nodo sin datos de valor'
-            if n['id'] in self._exfiltrados:
-                return 'Datos ya exfiltrados de este nodo'
-            return None
-        if not self.alcanzable(i['nodoId']):
-            return 'Nodo no alcanzable (necesitas un foothold adyacente)'
-        if fx < fase_index(t['faseRequiere']):
-            return f"Requiere fase previa: {t['faseRequiere']}"
-        if fx >= fase_index(t['faseProduce']):
-            return 'Fase ya alcanzada en este nodo'
-        return None
+        return t.validar(self, n)
 
     def prob_exito(self, tecnica_id, n):
         t = TECNICA_POR_ID.get(tecnica_id)
         if not t:
-            return 0
-        return clamp(t['facilidadBase'] * (1 - self._resistencia(n)) * (1 - n['posturaDefensiva']), 0.02, 0.98)
+            return 0.0
+        return clamp(t.facilidadBase * (1 - self._resistencia(n)) * (1 - n['posturaDefensiva']), 0.02, 0.98)
+
+    def disponibilidad(self):
+        return clamp(1 - self._penalDisponibilidad / self.suma_valor, 0, 1)
 
     def _resistencia(self, n):
         vulns = n['vulnerabilidades']
@@ -165,181 +156,120 @@ class Engine:
         avg = sum(v['dificultad'] for v in vulns) / len(vulns)
         return clamp(avg, 0.2, 0.9)
 
-    def _sinc_estado_visual(self, n):
+    # --------- mutadores de apoyo (usados por las técnicas/respuestas) ----------
+    def sincronizar_estado(self, n):
         if n['estado'] in ('aislado', 'honeypot'):
             return
         fx = fase_index(n['fase'])
         n['estado'] = 'limpio' if fx < 0 else 'sondeado' if fx == 0 else 'comprometido'
 
+    def agregar_loot(self, n, item, tipo, secreto):
+        """Añade un botín si no estaba ya. Devuelve 1 si era nuevo, 0 si repetido."""
+        if any(l['nodoId'] == n['id'] and l['item'] == item for l in self.loot):
+            return 0
+        self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
+                          'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': item, 'tipo': tipo, 'secreto': secreto})
+        return 1
+
+    def registrar_exfiltracion(self, n):
+        requiere(n['compromisoReal'], 'exfiltrar exige nodo comprometido', nodo=n['id'])
+        requiere(n['id'] not in self.exfiltrados, 'no se exfiltra dos veces el mismo nodo', nodo=n['id'])
+        antes = self.datos_exfiltrados
+        self.exfiltrados.add(n['id'])
+        n['fase'] = 'exfiltracion'
+        self.datos_exfiltrados += n['valor']
+        self.agregar_loot(n, f"dump_exfiltrado_{n['id']}.db", 'db',
+                          f"EXFILTRACIÓN COMPLETADA: {n['valor']} MB de {n['nombre']}. Total {self.datos_exfiltrados}/{self.meta_exfiltracion} MB.")
+        asegura(self.datos_exfiltrados == antes + n['valor'], 'la exfiltración suma el valor del nodo', nodo=n['id'])
+
     # --------- resolver ataque ----------
     def _resolver_ataque(self, i):
-        motivo = self.validar_ataque(i)
         t = TECNICA_POR_ID.get(i['tecnicaId'])
         n = self.nodo(i['nodoId'])
+        motivo = self.validar_ataque(i)
         target_label = n['nombre'] if n else i['nodoId']
-        cmd_str = (t['comandoEjemplo'] if t and t.get('comandoEjemplo') else f"{i['tecnicaId']} {i['nodoId']}").replace('{target}', target_label)
+        cmd_str = (t.comandoEjemplo if t and t.comandoEjemplo else f"{i['tecnicaId']} {i['nodoId']}").replace('{target}', target_label)
 
         if motivo:
-            self._log(tipo='ataque', lado='attacker', nodoId=i['nodoId'], malicioso=True, exito=False,
-                      texto=f"{t['nombre'] if t else i['tecnicaId']}: rechazado ({motivo})")
-            self.log_terminal('attacker', cmd_str, f"[-] EXECUTION REJECTED: {motivo}", 'error', i['nodoId'])
+            self._rechazo('attacker', i, t, cmd_str, motivo)
+            return
+        if self.energia['attacker'] < t.costo:
+            self._rechazo('attacker', i, t, cmd_str, f'Energía insuficiente ({self.energia["attacker"]}/{t.costo})')
             return
 
+        self.energia['attacker'] -= t.costo
         if self._firstMaliciousTick is None:
             self._firstMaliciousTick = self.tick
-        p_exito = self.prob_exito(t['id'], n)
+        p_exito = self.prob_exito(t.id, n)
         exito = self.rng.chance(p_exito)
-        ruido = t['ruido']
 
         self._log(tipo='ataque', lado='attacker', nodoId=n['id'], malicioso=True, exito=exito,
-                  texto=f"{t['nombre']} sobre {n['nombre']} [ruido:{ruido}] (p={p_exito:.2f}) -> {'ÉXITO' if exito else 'fallo'}")
+                  texto=f"{t.nombre} sobre {n['nombre']} [ruido:{t.ruido}] (p={p_exito:.2f}) -> {'ÉXITO' if exito else 'fallo'}")
 
         if not exito:
-            self.log_terminal('attacker', cmd_str, f"[-] PROBE FAILED: La sonda/exploit sobre {n['nombre']} fue bloqueada o no respondió (p={round(p_exito*100)}%).", 'error', n['id'])
-            self.log_terminal('defender', 'ebpf_trace -e net_drop', f"[eBPF ALERT] Intento de conexión sospechosa mitigado en {n['nombre']} [ruido: {ruido}]", 'alerta', n['id'])
+            self.combo['attacker'] = 0
+            self.log_terminal('attacker', cmd_str, f"[-] PROBE FAILED: {n['nombre']} resistió (p={round(p_exito*100)}%).", 'error', n['id'])
+            self.log_terminal('defender', 'ebpf_trace -e net_drop', f"[eBPF] Conexión sospechosa mitigada en {n['nombre']} [ruido: {t.ruido}]", 'alerta', n['id'])
             return
 
-        salida_detalle = f"[+] SUCCESS: Técnica {t['nombre']} exitosa sobre {n['nombre']}."
-
-        if t['id'] == 'scan_docs':
-            n['fase'] = n['fase'] or 'recon'
-            sensibles = n.get('archivosSensibles') or []
-            extraidos = 0
-            for archivo in sensibles:
-                if not any(l['nodoId'] == n['id'] and l['item'] == archivo for l in self.loot):
-                    tipo = 'doc'
-                    sec = 'Documento clasificado interno de la organización.'
-                    if 'env' in archivo:
-                        tipo = 'env'
-                        sec = f"DB_USER=admin_{n['id']} | DB_PASS=Secret@2026! | JWT_SECRET=sk_live_948f2a1b_{n['id']}"
-                    elif 'sql' in archivo or 'dump' in archivo or 'tar.gz' in archivo:
-                        tipo = 'db'
-                        sec = f"DUMP_SQL: {archivo} ({n['valor']*2.8:.1f} MB con registros confidenciales)"
-                    elif 'pass' in archivo or 'rsa' in archivo or 'vault' in archivo or 'key' in archivo:
-                        tipo = 'cred'
-                        sec = f"CREDENTIALS: Clave privada / hash extraído de {archivo}"
-                    self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
-                                      'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': archivo, 'tipo': tipo, 'secreto': sec})
-                    extraidos += 1
-            salida_detalle = (f"[+] VULN DISCOVERY: Descubiertos {extraidos} archivos (.env, configs, documentos) en {n['nombre']}:\n" +
-                              "\n".join(f"    * [ARCH_EXPUESTO] {s}" for s in sensibles))
-        elif t['id'] == 'sqli_dump':
-            n['fase'] = ORDEN_FASE[max(fase_index(n['fase']), fase_index('acceso_inicial'))]
-            item_name = f"sqli_dump_{n['id']}.sql"
-            if not any(l['nodoId'] == n['id'] and l['item'] == item_name for l in self.loot):
-                sec = f"SQL TABLE DUMP: Esquemas 'usuarios', 'roles', 'transacciones' extraídos ({n['valor']*1.8:.1f} MB con registros y hashes)."
-                self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
-                                  'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': item_name, 'tipo': 'db', 'secreto': sec})
-            for archivo in n.get('archivosSensibles') or []:
-                if ('sql' in archivo or 'dump' in archivo) and not any(l['nodoId'] == n['id'] and l['item'] == archivo for l in self.loot):
-                    self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
-                                      'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': archivo, 'tipo': 'db',
-                                      'secreto': f"EXTRACTED SQL TABLE: {archivo} sustraído mediante inyección de consultas."})
-            salida_detalle = (f"[+] SQLMAP 1.7.2#STABLE - INYECCIÓN SQL EXITOSA en {n['nombre']}:\n"
-                              f"    [INFO] DBMS identificado: PostgreSQL/MySQL (Inyección booleana y UNION confirmada)\n"
-                              f"    [+] Tablas identificadas: ['usuarios_admin', 'cuentas_2026', 'sesiones_activas']\n"
-                              f"    [+] Hash volcado: admin_$2y$12$K8j7m..e8b662d005b79942 (Descifrado: Secret@2026!)\n"
-                              f"    [+] Registros guardados en C2: sqli_dump_{n['id']}.sql")
-        elif t['id'] == 'dump_lsass':
-            n['fase'] = 'escalada'
-            item_name = f"lsass_hashes_{n['id']}.txt"
-            if not any(l['nodoId'] == n['id'] and l['item'] == item_name for l in self.loot):
-                sec = f"NTLM_HASHES: Administrator:500:aad3b435b51404eeaad3b435b51404ee:31d6cfe0d16ae931b73c59d7e0c089c0:::"
-                self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
-                                  'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': item_name, 'tipo': 'cred', 'secreto': sec})
-            for archivo in n.get('archivosSensibles') or []:
-                if ('pass' in archivo or 'rsa' in archivo or 'key' in archivo) and not any(l['nodoId'] == n['id'] and l['item'] == archivo for l in self.loot):
-                    self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
-                                      'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': archivo, 'tipo': 'cred',
-                                      'secreto': f"CREDENTIAL VAULT: {archivo} extraído de memoria de procesos."})
-            salida_detalle = (f"[+] MIMIKATZ 2.2.0 - SEKURLSA::LOGONPASSWORDS en {n['nombre']}:\n"
-                              f"    * SeDebugPrivilege: Activado (Handle de proceso LSASS obtenido)\n"
-                              f"    * Dominio: CORP | Usuario: Administrator (RID 500)\n"
-                              f"    * Hash NTLM: 31d6cfe0d16ae931b73c59d7e0c089c0\n"
-                              f"    * Kerberos TGT: Ticket de dominio capturado y guardado en C2.")
-        elif t['id'] == 'persist_backdoor':
-            n['fase'] = ORDEN_FASE[max(fase_index(n['fase']), fase_index('escalada'))]
-            n['persistente'] = True
-            salida_detalle = (f"[+] PERSISTENCIA INSTALADA en {n['nombre']}:\n"
-                              f"    * Cronjob implantado: /etc/cron.d/sys-telemetry (Ejecuta beacon C2 cada 3 min)\n"
-                              f"    * WebShell camuflada: /var/www/html/.cache_api.php (SHA-256 verificado)\n"
-                              f"    * Rootkit eBPF activo: Control persistente que resiste SIGKILL estándar.")
-        elif t['id'] == 'phishing_spray':
-            n['fase'] = ORDEN_FASE[max(fase_index(n['fase']), fase_index('acceso_inicial'))]
-            salida_detalle = (f"[*] CRACKMAPEXEC v5.2.2 - PASS-THE-HASH & CREDENTIAL SPRAY sobre {n['nombre']}:\n"
-                              f"    [+] SMB 445 / WinRM: Autenticación exitosa con credenciales de dominio.\n"
-                              f"    [+] CORP\\admin_ws : Secret@2026! (Pwn3d!) -> Shell interactiva establecida.\n"
-                              f"    [+] Foothold y credenciales activas en {n['nombre']}.")
-        elif t['id'] == 'exfil':
-            self._exfiltrados.add(n['id'])
-            n['fase'] = 'exfiltracion'
-            self._datosExfiltrados += n['valor']
-            self.loot.append({'id': f"loot-{self.tick}-{len(self.loot)}", 'tick': self.tick,
-                              'nodoId': n['id'], 'nodoNombre': n['nombre'], 'item': f"dump_exfiltrado_{n['id']}.db", 'tipo': 'db',
-                              'secreto': f"EXFILTRACIÓN COMPLETADA: Base de datos completa sustraída ({n['valor']} MB). Total robado: {self._datosExfiltrados}/{self._metaExfiltracion} MB."})
-            salida_detalle = f"[+] EXFILTRATION HARVEST: Extraídos {n['valor']} MB de {n['nombre']} hacia C2 (Total: {self._datosExfiltrados}/{self._metaExfiltracion} MB)."
-            self._log(tipo='ataque', lado='attacker', nodoId=n['id'], malicioso=True, exito=True,
-                      texto=f"Datos exfiltrados de {n['nombre']} (+{n['valor']}). Total: {self._datosExfiltrados}/{self._metaExfiltracion}")
-        else:
-            n['fase'] = ORDEN_FASE[max(fase_index(n['fase']), fase_index(t['faseProduce']))]
-            if t['id'] == 'privesc':
-                salida_detalle = f"[+] ROOT ACCESS GRANTED: Elevación de privilegios conseguida en {n['nombre']}. Control total del nodo."
-            elif t['id'] == 'pivot':
-                salida_detalle = f"[+] PIVOT ESTABLISHED: Túnel lateral abierto hacia {n['nombre']}. Nuevo salto de red disponible."
-            elif t['id'] == 'exploit':
-                salida_detalle = f"[+] RCE SHELL OPEN: Explotación exitosa. Shell remota establecida en {n['nombre']}."
-
+        salida = t.efecto(self, n)                 # <-- enlace dinámico (Sesión 2)
+        self._puntuar('attacker', t.puntos)
         if fase_index(n['fase']) >= fase_index('acceso_inicial'):
             n['compromisoReal'] = True
-        self._sinc_estado_visual(n)
+        self.sincronizar_estado(n)
         self.aristas.append({'from': 'atacante', 'to': n['id'], 'tipo': 'actividad', 'edad': 0})
+        self.log_terminal('attacker', cmd_str, salida, 'exito', n['id'])
+        self.log_terminal('defender', f"ebpf_probe --host {n['nombre']}",
+                          f"[eBPF] Tráfico hostil en {n['nombre']} [técnica: {t.nombre}, ruido: {t.ruido}]",
+                          'alerta' if t.ruido == 'alto' else 'output', n['id'])
 
-        self.log_terminal('attacker', cmd_str, salida_detalle, 'exito', n['id'])
-        self.log_terminal('defender', f"ebpf_probe --event sys_enter_connect --host {n['nombre']}",
-                          f"[eBPF TELEMETRÍA] Tráfico hostil detectado en {n['nombre']} [técnica: {t['nombre']}, ruido: {ruido}]",
-                          'alerta' if ruido == 'alto' else 'output', n['id'])
+    def _rechazo(self, lado, i, t, cmd_str, motivo):
+        self._log(tipo='ataque', lado=lado, nodoId=i['nodoId'], malicioso=True, exito=False,
+                  texto=f"{t.nombre if t else i['tecnicaId']}: rechazado ({motivo})")
+        self.log_terminal(lado, cmd_str, f"[-] REJECTED: {motivo}", 'error', i['nodoId'])
 
+    # --------- resolver respuesta ----------
+    def _resolver_respuesta(self, i):
+        r = RESPUESTA_POR_ID.get(i['respuesta'])
+        n = self.nodo(i['nodoId'])
+        if not r or not n:
+            return
+        cmd = (r.comandoEjemplo or f"{i['respuesta']} {i['nodoId']}").replace('{target}', n['nombre'])
+        if self.energia['defender'] < r.costo:
+            self.log_terminal('defender', cmd, f"[-] SIN ENERGÍA: {r.nombre} cuesta {r.costo} (tienes {self.energia['defender']})", 'error', n['id'])
+            return
+
+        self.energia['defender'] -= r.costo
+        hostil = n['compromisoReal'] or n['estado'] == 'sondeado'
+        res = r.aplicar(self, n)                    # <-- enlace dinámico (Sesión 2)
+        self._penalDisponibilidad += res.penalizacion
+        self._puntuar('defender', r.puntos if hostil else r.puntos_fp)
+        self.eventos.append({'tick': self.tick, 'id': f"r{self.tick}-{n['id']}", 'tipo': 'respuesta',
+                             'lado': 'defender', 'nodoId': n['id'], 'texto': res.texto})
+        self.log_terminal('defender', cmd, f"[+] DEFENSE: {res.texto}", 'exito', n['id'])
+        if res.eco:
+            self.log_terminal('attacker', 'session_check', res.eco, 'error', n['id'])
+
+    # --------- puntaje / combos ----------
+    def _puntuar(self, lado, base):
+        if base <= 0:
+            self.puntos[lado] = max(0, self.puntos[lado] + base)
+            self.combo[lado] = 0
+            return
+        self.combo[lado] += 1
+        bonus = 1 + 0.1 * (self.combo[lado] - 1)   # combo: acciones encadenadas valen más
+        self.puntos[lado] += round(base * bonus)
+
+    # --------- ciclo de vida ----------
     def _expirar_aislamientos(self):
         for n in self.nodos:
             if n['estado'] == 'aislado' and n.get('aisladoHasta') is not None and self.tick >= n['aisladoHasta']:
-                n['estado'] = 'limpio'
-                n['fase'] = None
-                n['compromisoReal'] = False
+                n.update(estado='limpio', fase=None, compromisoReal=False, persistente=False,
+                         score=0, senales={}, aisladoHasta=None)
                 n['posturaDefensiva'] *= 0.5
-                n['senales'] = {}
-                n['score'] = 0
-                n['aisladoHasta'] = None
                 self._log(tipo='sistema', nodoId=n['id'], texto=f"{n['nombre']} vuelve online (remediado)")
                 self.log_terminal('defender', f"xdp_filter --restore --host {n['nombre']}",
-                                  f"[SOC] Aislamiento concluido. Host {n['nombre']} restaurado a la red corporativa tras desinfección.", 'output', n['id'])
-
-    def _resolver_respuesta(self, i):
-        n = self.nodo(i['nodoId'])
-        r = aplicar_respuesta(self.nodos, i['respuesta'], i['nodoId'], self.tick)
-        self.eventos.append(r['evento'])
-        self._penalDisponibilidad += r['penalizaDisponibilidad']
-        r_meta = RESPUESTA_POR_ID.get(i['respuesta'])
-        cmd_def = (r_meta['comandoEjemplo'] if r_meta and r_meta.get('comandoEjemplo') else f"{i['respuesta']} {i['nodoId']}")
-        cmd_def = cmd_def.replace('{target}', n['nombre'] if n else i['nodoId']).replace('{attacker_ip}', '192.168.1.188')
-        self.log_terminal('defender', cmd_def, f"[+] DEFENSE APPLIED: {r['evento']['texto']}", 'exito', i['nodoId'])
-        nombre = n['nombre'] if n else i['nodoId']
-        if i['respuesta'] == 'aislar':
-            self.log_terminal('attacker', f"ping -c 1 {nombre}", f"[-] CONNECTION DROPPED: Destino inalcanzable. El host {nombre} ha sido aislado por el defensor.", 'error', i['nodoId'])
-        elif i['respuesta'] == 'terminar_proceso':
-            self.log_terminal('attacker', f"session_check --host {nombre}", "[-] SIGNAL KILLED: Conexión o shell interrumpida por el SOC defensor.", 'error', i['nodoId'])
-        elif i['respuesta'] == 'parchear_env':
-            self.log_terminal('attacker', f"curl -s http://{nombre}/.env", "[-] ACCESS DENIED (403): Variables y credenciales rotadas/parcheadas.", 'error', i['nodoId'])
-        elif i['respuesta'] == 'parchear_vuln':
-            self.log_terminal('attacker', f"check_exploit --target {nombre}", f"[-] EXPLOIT MITIGATED: El servicio en {nombre} fue parchado por el SOC. CVE no explotable (Hotfix).", 'error', i['nodoId'])
-        elif i['respuesta'] == 'yara_memory_scan':
-            if n and n.get('persistente'):
-                n['persistente'] = False
-            self.log_terminal('attacker', f"beacon_ping --node {nombre}", f"[-] BEACON DESTROYED: Proceso hostil en memoria purgado mediante firma YARA.", 'error', i['nodoId'])
-        elif i['respuesta'] == 'canary_token':
-            self.log_terminal('defender', f"canary_monitor --token-status --node {nombre}", f"[CANARY ARM] Trampa HoneyToken sembrada en {nombre}. Telemetría lista.", 'output', i['nodoId'])
-            self.log_terminal('attacker', f"probe_env --node {nombre}", f"[!] DECOY SUSPECTED: Detectadas credenciales señuelo en {nombre}.", 'alerta', i['nodoId'])
-        elif i['respuesta'] == 'rotate_keys':
-            self.log_terminal('attacker', f"ssh -i id_rsa {nombre}", f"[-] AUTH REJECTED: Llaves SSH / Kerberos revocadas en {nombre} por el SOC.", 'error', i['nodoId'])
+                                  f"[SOC] {n['nombre']} restaurado tras desinfección.", 'output', n['id'])
 
     def _ruido_benigno(self):
         activos = [x for x in self.nodos if x['estado'] != 'aislado']
@@ -349,12 +279,12 @@ class Engine:
         if self.rng.chance(0.5):
             acciones = ['navegación web', 'tarea cron', 'actualización', 'sincronización de archivos', 'consulta DNS']
             self._log(tipo='benigno', nodoId=n['id'], malicioso=False, texto=f"{n['nombre']}: {self.rng.pick(acciones)}")
-            if self.rng.chance(0.18):
-                self.log_terminal('defender', 'auditd -k benign_telemetry', f"[AUDIT INFO] Actividad normal en {n['nombre']}: sincronización de rutina verificada.", 'output', n['id'])
 
-    # --------- un tick completo ----------
     def avanzar(self, ataque=None, respuesta=None):
+        """Un tick completo. Termina verificando los invariantes del motor (DbC)."""
         self.tick += 1
+        for lado in self.energia:
+            self.energia[lado] = min(self.ENERGIA_MAX, self.energia[lado] + self.ENERGIA_REGEN)
         self._expirar_aislamientos()
         self.detector.decae(self.nodos)
         self._ruido_benigno()
@@ -366,17 +296,18 @@ class Engine:
                 self.detector.observa(self.nodos, ev)
         if respuesta:
             self._resolver_respuesta(respuesta)
+
         # envejecer aristas de actividad
-        nuevas_aristas = []
+        vivas = []
         for a in self.aristas:
             if a['tipo'] == 'red':
-                nuevas_aristas.append(a)
+                vivas.append(a)
             else:
                 a['edad'] = a.get('edad', 0) + 1
                 if a['edad'] < 12:
-                    nuevas_aristas.append(a)
-        self.aristas = nuevas_aristas
-        # detección
+                    vivas.append(a)
+        self.aristas = vivas
+
         for al in self.detector.califica(self.nodos, self.tick):
             self.alertas.append(al)
             self._log(tipo='deteccion', lado='defender', nodoId=al['nodoId'],
@@ -386,32 +317,47 @@ class Engine:
             if al['verdadera'] and self._firstTrueAlertTick is None:
                 self._firstTrueAlertTick = self.tick
         if self._firstTrueAlertTick is not None and self._containmentTick is None:
-            queda = any(n['compromisoReal'] and n['estado'] != 'aislado' for n in self.nodos)
-            if not queda:
+            if not any(n['compromisoReal'] and n['estado'] != 'aislado' for n in self.nodos):
                 self._containmentTick = self.tick
+
         self._recortar()
+        invariantes_del_motor(self)
 
     # --------- fin de partida ----------
     def terminada(self):
-        return self._datosExfiltrados >= self._metaExfiltracion or self.tick >= self.tickMax
+        return (self.datos_exfiltrados >= self.meta_exfiltracion
+                or self.puntos['attacker'] >= self.PUNTOS_META
+                or self.puntos['defender'] >= self.PUNTOS_META
+                or self.tick >= self.tickMax)
 
     def ganador(self):
-        if self._datosExfiltrados >= self._metaExfiltracion:
+        if self.datos_exfiltrados >= self.meta_exfiltracion or self.puntos['attacker'] >= self.PUNTOS_META:
             return 'attacker'
-        return 'defender' if self._disponibilidad() >= 0.5 else 'empate'
-
-    def _disponibilidad(self):
-        return clamp(1 - self._penalDisponibilidad / self._sumValor, 0, 1)
+        if self.puntos['defender'] >= self.PUNTOS_META:
+            return 'defender'
+        if self.disponibilidad() < 0.5:
+            return 'attacker'
+        if self.puntos['attacker'] == self.puntos['defender']:
+            return 'empate'
+        return 'defender' if self.puntos['defender'] > self.puntos['attacker'] else 'attacker'
 
     def metricas(self):
         return {
             'mttd': (self._firstTrueAlertTick - self._firstMaliciousTick) if (self._firstMaliciousTick is not None and self._firstTrueAlertTick is not None) else None,
             'mttr': (self._containmentTick - self._firstTrueAlertTick) if (self._firstTrueAlertTick is not None and self._containmentTick is not None) else None,
-            'disponibilidad': round(self._disponibilidad(), 3),
-            'datosExfiltrados': self._datosExfiltrados,
-            'metaExfiltracion': self._metaExfiltracion,
+            'disponibilidad': round(self.disponibilidad(), 3),
+            'datosExfiltrados': self.datos_exfiltrados,
+            'metaExfiltracion': self.meta_exfiltracion,
             'alertasTotales': len(self.alertas),
             'alertasFalsas': sum(1 for a in self.alertas if not a['verdadera']),
+            'puntosAtacante': self.puntos['attacker'],
+            'puntosDefensor': self.puntos['defender'],
+            'puntosMeta': self.PUNTOS_META,
+            'energiaAtacante': self.energia['attacker'],
+            'energiaDefensor': self.energia['defender'],
+            'energiaMax': self.ENERGIA_MAX,
+            'comboAtacante': self.combo['attacker'],
+            'comboDefensor': self.combo['defender'],
         }
 
     # --------- utilidades ----------

@@ -67,6 +67,6 @@ El simulador **preserva los conceptos académicos** (grafo dinámico, detección
 ## 7. Supuestos y restricciones
 
 - Las dos PCs están en la **misma red local** (o pueden alcanzar al servidor por IP/puerto).
-- Un solo lenguaje de implementación: **TypeScript** (servidor Node + frontend React/Vite).
+- Backend en **Python 3.11 + FastAPI**; frontend en **TypeScript + React + Vite**; contrato de datos compartido (`shared/protocol.ts`).
 - Sin dependencia de GPU, Linux ni privilegios de administrador.
-- Debe arrancar con `npm install && npm run dev` en Windows, macOS o Linux.
+- Backend: `pip install -r backend/requirements.txt && python backend/app.py`. Frontend: `npm install && npm run build` en `web/`. Corre en Windows, macOS o Linux, sin GPU ni admin.
